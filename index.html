@@ -554,6 +554,19 @@
         find the actual tile URL and layers automatically.
       </p>
 
+      <div style="margin-top:14px; padding-top:14px; border-top:1px dashed var(--line-cyan-dim);">
+        <p class="section-label" style="margin:0 0 8px;">Base underneath</p>
+        <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12.5px; color:var(--ink-dim); cursor:pointer;">
+          <input type="checkbox" id="showSatUnderlayToggle" checked style="width:auto;">
+          Satellite imagery
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-dim); cursor:pointer;">
+          <input type="checkbox" id="showStreetUnderlayToggle" style="width:auto;">
+          Streets
+        </label>
+        <p class="hint" style="margin-top:8px;">The WMTS layer always stays on top, regardless of which of these are on.</p>
+      </div>
+
       <div id="customLayerStatus"></div>
       <div class="col-grid" style="margin-top:10px;">
         <button class="btn small" id="customLayerCancelBtn">Cancel</button>
@@ -614,17 +627,37 @@
   let currentLayer = 'street';
   let customTileLayer = null;
   let customLayerBoundsRect = null; // red outline showing the WMTS layer's extent
+  let showSatUnderlay = true;       // default matches the original behavior
+  let showStreetUnderlay = false;
 
   const baseLayers = { street: streetLayer, sat: satLayer, custom: null }; // custom filled in once configured
 
   function removeCurrentLayers(){
     if(currentLayer === 'custom'){
       if(map.hasLayer(satLayer)) map.removeLayer(satLayer);
+      if(map.hasLayer(streetLayer)) map.removeLayer(streetLayer);
       if(baseLayers.custom && map.hasLayer(baseLayers.custom)) map.removeLayer(baseLayers.custom);
       if(customLayerBoundsRect && map.hasLayer(customLayerBoundsRect)) map.removeLayer(customLayerBoundsRect);
     } else if(baseLayers[currentLayer] && map.hasLayer(baseLayers[currentLayer])){
       map.removeLayer(baseLayers[currentLayer]);
     }
+  }
+
+  // Adds/removes Satellite and Streets underneath based on their checkbox
+  // state, then always brings the WMTS layer (and its extent outline) back
+  // to the top — so whatever order things got added in, WMTS never ends up
+  // hidden beneath a basemap.
+  function updateCustomUnderlays(){
+    if(currentLayer !== 'custom') return;
+
+    if(showSatUnderlay){ if(!map.hasLayer(satLayer)) satLayer.addTo(map); }
+    else if(map.hasLayer(satLayer)) map.removeLayer(satLayer);
+
+    if(showStreetUnderlay){ if(!map.hasLayer(streetLayer)) streetLayer.addTo(map); }
+    else if(map.hasLayer(streetLayer)) map.removeLayer(streetLayer);
+
+    if(baseLayers.custom && map.hasLayer(baseLayers.custom)) baseLayers.custom.bringToFront();
+    if(customLayerBoundsRect && map.hasLayer(customLayerBoundsRect)) customLayerBoundsRect.bringToFront();
   }
 
   function switchToLayer(layer){
@@ -637,17 +670,25 @@
     document.querySelectorAll('#layerToggle button[data-layer]').forEach(b=>b.classList.toggle('active', b.dataset.layer===layer));
     removeCurrentLayers();
     if(layer === 'custom'){
-      // Satellite underneath as a real-imagery fallback for any
-      // transparent or missing tiles in the custom layer, so gaps show
-      // actual ground instead of the plain map background.
-      satLayer.addTo(map);
       baseLayers.custom.addTo(map);
       if(customLayerBoundsRect) customLayerBoundsRect.addTo(map);
+      currentLayer = layer;
+      updateCustomUnderlays(); // adds Satellite/Streets per their checkboxes, keeps WMTS on top
+      return;
     } else if(baseLayers[layer]){
       baseLayers[layer].addTo(map);
     }
     currentLayer = layer;
   }
+
+  document.getElementById('showSatUnderlayToggle').addEventListener('change', e=>{
+    showSatUnderlay = e.target.checked;
+    updateCustomUnderlays();
+  });
+  document.getElementById('showStreetUnderlayToggle').addEventListener('change', e=>{
+    showStreetUnderlay = e.target.checked;
+    updateCustomUnderlays();
+  });
 
   document.querySelectorAll('#layerToggle button[data-layer]').forEach(btn=>{
     btn.addEventListener('click', ()=> switchToLayer(btn.dataset.layer));
@@ -831,12 +872,14 @@
 
     if(currentLayer === 'custom'){
       // Already showing Custom (picking a different layer from the same
-      // capabilities doc, or re-applying) — satellite's already underneath,
-      // just swap in the new tile layer + outline on top.
+      // capabilities doc, or re-applying) — underlays are already however
+      // the checkboxes have them set, just swap in the new tile layer +
+      // outline and make sure they land on top.
       customTileLayer.addTo(map);
       if(customLayerBoundsRect) customLayerBoundsRect.addTo(map);
+      updateCustomUnderlays();
     } else {
-      switchToLayer('custom'); // adds satellite underneath + this layer + outline on top
+      switchToLayer('custom'); // adds underlays per checkboxes + this layer + outline on top
     }
 
     // Center on the layer's real-world extent, straight from the
