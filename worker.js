@@ -74,7 +74,6 @@ async function handleDownload(request, url) {
         lastBody = await metaRes.text().catch(() => '');
         continue; // try next regional host
       }
-
       const meta = await metaRes.json();
 
       // Step 2: look for a download link Trimble's own response gives us,
@@ -104,7 +103,7 @@ async function handleDownload(request, url) {
       // any of the field names we checked. Surface the raw shape so we can
       // see Trimble's actual field names instead of guessing further.
       return new Response(
-        `Got file metadata but couldn't find a download link in it. Raw response so we can see the real field names:\n\n${JSON.stringify(meta, null, 2)}`.slice(0, 1500),
+        `Got file metadata but couldn't find a download link in it. fileId requested: ${fileId}. Raw response so we can see the real field names:\n\n${JSON.stringify(meta, null, 2)}`.slice(0, 1500),
         { status: 502, headers: CORS_HEADERS }
       );
     } catch (e) {
@@ -114,7 +113,7 @@ async function handleDownload(request, url) {
   }
 
   return new Response(
-    `Could not fetch file metadata from any known Trimble region host. Last status: ${lastStatus}. ${lastBody}`.slice(0, 800),
+    `Could not fetch file metadata from any known Trimble region host. fileId requested: ${fileId}. Last status: ${lastStatus}. ${lastBody}`.slice(0, 800),
     { status: 502, headers: CORS_HEADERS }
   );
 }
