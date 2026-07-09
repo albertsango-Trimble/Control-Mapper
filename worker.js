@@ -133,7 +133,11 @@ async function handleDownload(request, url) {
       // File via URL" operation, and by the token-URL pattern its
       // thumbnailUrl field already proved is real for this API.
       const candidatePaths = [
-        `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions` // list all versions — a version entry may carry its own pointer URL, like thumbnailUrl does
+        // Confirmed directly from Trimble's own official JS SDK source
+        // (trimble-connect-sdk, TCPS.getFileDownloadUrl): the /fs/ segment
+        // is required and easy to miss — every path we'd guessed without it
+        // came back INVALID_ENDPOINT.
+        `/tc/api/2.0/files/fs/${encodeURIComponent(fileId)}/downloadurl${versionId ? `?versionId=${encodeURIComponent(versionId)}` : ''}`
       ];
 
       const attempts = [];
