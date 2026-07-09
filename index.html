@@ -318,6 +318,14 @@
     background:transparent; border:none; color:var(--ink-dim); padding:7px 14px; border-radius:5px; cursor:pointer;
   }
   #layerToggle button.active{ background:var(--copper); color:var(--navy-950); font-weight:600; }
+  #customLayerEditBtn{
+    padding:7px 10px !important; font-size:13px !important; border-left:1px solid var(--line-cyan-dim) !important;
+    border-radius:0 5px 5px 0 !important; text-transform:none !important;
+  }
+  #customLayerPanel{
+    position:absolute; top:54px; right:14px; z-index:1000;
+    width:320px; padding:16px; display:none;
+  }
 
   #pickBanner{
     position:absolute; top:14px; left:50%; transform:translateX(-50%);
@@ -518,6 +526,33 @@
       <div class="glass-panel" id="layerToggle">
         <button data-layer="street" class="active">Streets</button>
         <button data-layer="sat">Satellite</button>
+        <button data-layer="custom" id="customLayerToggleBtn">Custom</button>
+        <button id="customLayerEditBtn" title="Configure custom base map (WMTS / XYZ)">⚙</button>
+      </div>
+    </div>
+
+    <div id="customLayerPanel" class="glass-panel" style="display:none;">
+      <p class="section-label" style="margin:0 0 10px;"><span class="num">◈</span> Custom base map</p>
+      <div class="field">
+        <label>Tile URL template</label>
+        <input type="text" id="customLayerUrl" placeholder="https://.../{z}/{x}/{y}.png?token=...">
+      </div>
+      <div class="field">
+        <label>Attribution (optional)</label>
+        <input type="text" id="customLayerAttribution" placeholder="© Propeller Aero">
+      </div>
+      <p class="hint">
+        Works with standard XYZ tile URLs and RESTful WMTS templates. Use
+        <b>{z}</b>/<b>{x}</b>/<b>{y}</b> — or the OGC-style
+        <b>{TileMatrix}</b>/<b>{TileCol}</b>/<b>{TileRow}</b>, which get
+        converted automatically. For Propeller Aero: open your site in
+        Propeller, go to <b>Share → Embed / WMTS</b>, and copy the tile URL
+        template from there.
+      </p>
+      <div id="customLayerStatus"></div>
+      <div class="col-grid" style="margin-top:10px;">
+        <button class="btn small" id="customLayerCancelBtn">Cancel</button>
+        <button class="btn primary small" id="customLayerApplyBtn">Apply &amp; use</button>
       </div>
     </div>
   </div>
@@ -572,17 +607,83 @@
   });
   streetLayer.addTo(map);
   let currentLayer = 'street';
+  let customTileLayer = null;
 
-  document.querySelectorAll('#layerToggle button').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const layer = btn.dataset.layer;
-      if(layer === currentLayer) return;
-      document.querySelectorAll('#layerToggle button').forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active');
-      if(layer === 'sat'){ map.removeLayer(streetLayer); satLayer.addTo(map); }
-      else { map.removeLayer(satLayer); streetLayer.addTo(map); }
-      currentLayer = layer;
+  const baseLayers = { street: streetLayer, sat: satLayer, custom: null }; // custom filled in once configured
+
+  function switchToLayer(layer){
+    if(layer === 'custom' && !baseLayers.custom){
+      // Not configured yet — open the config panel instead of switching.
+      openCustomLayerPanel();
+      return;
+    }
+    if(layer === currentLayer) return;
+    document.querySelectorAll('#layerToggle button[data-layer]').forEach(b=>b.classList.toggle('active', b.dataset.layer===layer));
+    if(baseLayers[currentLayer]) map.removeLayer(baseLayers[currentLayer]);
+    if(baseLayers[layer]) baseLayers[layer].addTo(map);
+    currentLayer = layer;
+  }
+
+  document.querySelectorAll('#layerToggle button[data-layer]').forEach(btn=>{
+    btn.addEventListener('click', ()=> switchToLayer(btn.dataset.layer));
+  });
+
+  // ---------------- Custom base map (WMTS / XYZ) ----------------
+  function setCustomLayerStatus(kind, msg){
+    const el = document.getElementById('customLayerStatus');
+    if(!msg){ el.innerHTML=''; return; }
+    el.innerHTML = `<div class="status-line ${kind}"><span class="dot"></span>${escapeHtml(msg)}</div>`;
+  }
+
+  function openCustomLayerPanel(){
+    document.getElementById('customLayerPanel').style.display = 'block';
+  }
+  function closeCustomLayerPanel(){
+    document.getElementById('customLayerPanel').style.display = 'none';
+    // If the panel is dismissed without applying and custom was never
+    // configured, make sure the toggle doesn't look stuck on "active".
+    document.querySelectorAll('#layerToggle button[data-layer]').forEach(b=>b.classList.toggle('active', b.dataset.layer===currentLayer));
+  }
+
+  document.getElementById('customLayerEditBtn').addEventListener('click', ()=>{
+    const panel = document.getElementById('customLayerPanel');
+    if(panel.style.display === 'block') closeCustomLayerPanel();
+    else openCustomLayerPanel();
+  });
+  document.getElementById('customLayerCancelBtn').addEventListener('click', closeCustomLayerPanel);
+
+  document.getElementById('customLayerApplyBtn').addEventListener('click', ()=>{
+    let url = document.getElementById('customLayerUrl').value.trim();
+    const attribution = document.getElementById('customLayerAttribution').value.trim();
+
+    if(!url){ setCustomLayerStatus('err','Paste a tile URL template first.'); return; }
+
+    // Accept OGC-style RESTful WMTS placeholder names too, converting them
+    // to the {z}/{x}/{y} form Leaflet expects.
+    url = url.replace(/\{TileMatrix\}/gi,'{z}').replace(/\{TileCol\}/gi,'{x}').replace(/\{TileRow\}/gi,'{y}');
+
+    if(!/\{z\}/.test(url) || !/\{x\}/.test(url) || !/\{y\}/.test(url)){
+      setCustomLayerStatus('err','URL must contain {z}, {x} and {y} placeholders (or the WMTS {TileMatrix}/{TileCol}/{TileRow} equivalents).');
+      return;
+    }
+
+    if(baseLayers.custom) map.removeLayer(baseLayers.custom);
+    customTileLayer = L.tileLayer(url, { attribution: attribution || '', maxZoom: 24 });
+    baseLayers.custom = customTileLayer;
+
+    // Surface tile-load failures (bad token, wrong template, CORS-blocked
+    // provider) instead of silently showing a blank map.
+    let tileErrorShown = false;
+    customTileLayer.on('tileerror', ()=>{
+      if(tileErrorShown) return;
+      tileErrorShown = true;
+      setCustomLayerStatus('warn', "Applied, but some tiles failed to load — double check the URL, token, and that the provider allows this domain.");
     });
+
+    setCustomLayerStatus('ok', 'Applied.');
+    document.getElementById('customLayerToggleBtn').textContent = 'Custom ✓';
+    switchToLayer('custom');
+    setTimeout(closeCustomLayerPanel, 600);
   });
 
   map.on('click', (e)=>{
