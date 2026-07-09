@@ -1,10 +1,13 @@
 // Cloudflare Worker entry point.
 //
-// With `assets.directory` configured in wrangler.jsonc, static files in
-// public/ (index.html, manifest.json, sample-points.csv) are served
-// automatically for any request that matches a real file. Anything that
-// doesn't match — just /api/download-file here — falls through to this
-// fetch handler instead.
+// wrangler.jsonc sets `run_worker_first: true`, so EVERY request comes
+// through this fetch handler first — including static files like
+// index.html and manifest.json. That's deliberate: Cloudflare's default
+// static-asset serving doesn't add CORS headers, and Trimble Connect
+// fetches manifest.json directly from the browser, which needs
+// Access-Control-Allow-Origin present or the "Add extension" step fails
+// with a generic "not a valid extension" error. So we fetch static files
+// ourselves via env.ASSETS and stamp CORS headers onto every response.
 
 const CANDIDATE_HOSTS = [
   'https://app.connect.trimble.com',
@@ -31,10 +34,13 @@ export default {
       }
     }
 
-    // Fallback: let static assets handle it (should already have happened
-    // automatically before this Worker ran, but this covers edge cases).
+    // Everything else: serve the static file, then add CORS headers so
+    // Trimble Connect (and any other external caller) can read it.
     if (env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      const assetRes = await env.ASSETS.fetch(request);
+      const res = new Response(assetRes.body, assetRes);
+      res.headers.set('Access-Control-Allow-Origin', '*');
+      return res;
     }
     return new Response('Not found', { status: 404 });
   }
