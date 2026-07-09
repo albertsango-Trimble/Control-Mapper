@@ -75,11 +75,14 @@ export default {
     }
 
     // Everything else: serve the static file, then add CORS headers so
-    // Trimble Connect (and any other external caller) can read it.
+    // Trimble Connect (and any other external caller) can read it. Also
+    // forbid caching outright — Trimble Connect's iframe was observed
+    // serving a stale cached copy of this app even after fresh deploys.
     if (env.ASSETS) {
       const assetRes = await env.ASSETS.fetch(request);
       const res = new Response(assetRes.body, assetRes);
       res.headers.set('Access-Control-Allow-Origin', '*');
+      res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       return res;
     }
     return new Response('Not found', { status: 404 });
