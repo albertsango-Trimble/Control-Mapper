@@ -1270,10 +1270,14 @@
   async function loadConnectFile(fileId, name){
     setModalStatus('warn', `Downloading ${name}…`);
     try{
-      const res = await fetch(`https://app.connect.trimble.com/tc/api/2.0/files/${encodeURIComponent(fileId)}/data`, {
+      // Calls our own Cloudflare Pages Function (same origin as this page),
+      // which does the actual Trimble Core API request server-side — that
+      // sidesteps the browser CORS block hit when calling Trimble's API
+      // directly from a third-party page.
+      const res = await fetch(`/api/download-file?fileId=${encodeURIComponent(fileId)}`, {
         headers: { Authorization: `Bearer ${tcAccessToken}` }
       });
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      if(!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
       const text = await res.text();
       ingestCsvText(text, name);
       closeConnectBrowser();
