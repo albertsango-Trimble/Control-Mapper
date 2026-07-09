@@ -1247,6 +1247,7 @@
   // differently-shaped event, the manual "Load by ID" field is the reliable
   // fallback — the file's ID is visible in its details panel in Connect.
   function onExplorerEvent(event, data){
+    console.log('[Point Mapper] explorer event:', event, data);
     const candidate = findCsvFileInPayload(data);
     if(candidate) loadConnectFile(candidate.id, candidate.name);
   }
@@ -1268,7 +1269,7 @@
   });
 
   async function loadConnectFile(fileId, name){
-    setModalStatus('warn', `Downloading ${name}…`);
+    setModalStatus('warn', `Downloading ${name}… (file id: ${fileId})`);
     try{
       // Calls our own Cloudflare Pages Function (same origin as this page),
       // which does the actual Trimble Core API request server-side — that
