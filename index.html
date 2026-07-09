@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Point Mapper — Trimble Connect Extension</title>
+<title>Control Mapper — Trimble Connect Extension</title>
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -299,7 +299,7 @@
 
   #topbar{
     position:absolute; top:14px; left:14px; right:14px; z-index:1000;
-    display:flex; justify-content:space-between; align-items:flex-start;
+    display:flex; justify-content:flex-end; align-items:flex-start;
     pointer-events:none;
   }
   #topbar > *{ pointer-events:auto; }
@@ -337,6 +337,7 @@
   #pickBanner.show{ display:flex; }
 
   #ptCount{
+    position:absolute; top:10px; left:52px; z-index:1000;
     padding:8px 14px; font-family:var(--font-mono); font-size:11.5px; color:var(--ink-dim);
   }
   #ptCount b{ color:var(--copper-bright); }
@@ -355,6 +356,14 @@
 
   .leaflet-control-attribution{ background:rgba(15,28,46,.7) !important; color:var(--ink-dim) !important; font-size:9.5px !important; }
   .leaflet-control-attribution a{ color:var(--ink-dim) !important; }
+
+  #watermarkLogo{
+    position:absolute; bottom:14px; left:14px; z-index:900;
+    max-height:52px; max-width:180px;
+    opacity:.35;
+    pointer-events:none; /* never blocks map clicks/drag */
+    filter:drop-shadow(0 1px 3px rgba(0,0,0,.4));
+  }
 
   @media (max-width:760px){
     #sidebar{ width:100vw; position:absolute; z-index:1002; height:100vh; }
@@ -402,7 +411,7 @@
       <div class="brand">
         <div class="brand-mark"></div>
         <div>
-          <h1>Point Mapper</h1>
+          <h1>Control Mapper</h1>
           <p>CSV → geolocated site points</p>
         </div>
       </div>
@@ -521,8 +530,9 @@
   <div id="mapArea">
     <div id="map"></div>
     <div id="pickBanner">◎ Click the map to set this point's location</div>
+    <div class="glass-panel" id="ptCount">no points plotted</div>
+    <img id="watermarkLogo" src="/upg-logo.png" alt="Ultimate Positioning Group" onerror="this.style.display='none'">
     <div id="topbar">
-      <div class="glass-panel" id="ptCount">no points plotted</div>
       <div class="glass-panel" id="layerToggle">
         <button data-layer="street" class="active">Streets</button>
         <button data-layer="sat">Satellite</button>
@@ -942,11 +952,11 @@
   }
 
   function processCsvText(text, name){
-    console.log('[Point Mapper] CSV text length:', text.length);
-    console.log('[Point Mapper] CSV text preview:', JSON.stringify(text.slice(0,300)));
+    console.log('[Control Mapper] CSV text length:', text.length);
+    console.log('[Control Mapper] CSV text preview:', JSON.stringify(text.slice(0,300)));
     rawCsvText = text;
     const useNoHeader = noHeaderOverride !== null ? noHeaderOverride : detectNoHeader(text);
-    console.log('[Point Mapper] detectNoHeader result:', useNoHeader);
+    console.log('[Control Mapper] detectNoHeader result:', useNoHeader);
     document.getElementById('noHeaderToggle').checked = useNoHeader;
     parseWithHeaderSetting(text, name, useNoHeader);
   }
@@ -1539,13 +1549,13 @@
           tcOuterApi = api;
           document.getElementById('browseConnectBtn').disabled = false;
 
-          // This is the call that actually puts "Point Mapper" into Connect's
+          // This is the call that actually puts "Control Mapper" into Connect's
           // left-hand navigation menu. Being enabled in Project Settings >
           // Extensions is not enough on its own — the extension has to
           // register its own menu entry once it connects.
           try{
             api.ui.setMenu({
-              title: 'Point Mapper',
+              title: 'Control Mapper',
               icon: 'https://albertsango-trimble.github.io/Control-Mapper/images.png',
               command: 'point_mapper_open'
             });
@@ -1646,7 +1656,7 @@
   // differently-shaped event, the manual "Load by ID" field is the reliable
   // fallback — the file's ID is visible in its details panel in Connect.
   function onExplorerEvent(event, data){
-    console.log('[Point Mapper] explorer event:', event, data);
+    console.log('[Control Mapper] explorer event:', event, data);
     const candidate = findCsvFileInPayload(data);
     if(candidate) loadConnectFile(candidate.id, candidate.name, candidate.versionId);
   }
