@@ -636,8 +636,11 @@
   }
 
   function processCsvText(text, name){
+    console.log('[Point Mapper] CSV text length:', text.length);
+    console.log('[Point Mapper] CSV text preview:', JSON.stringify(text.slice(0,300)));
     rawCsvText = text;
     const useNoHeader = noHeaderOverride !== null ? noHeaderOverride : detectNoHeader(text);
+    console.log('[Point Mapper] detectNoHeader result:', useNoHeader);
     document.getElementById('noHeaderToggle').checked = useNoHeader;
     parseWithHeaderSetting(text, name, useNoHeader);
   }
