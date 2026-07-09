@@ -613,6 +613,7 @@
   streetLayer.addTo(map);
   let currentLayer = 'street';
   let customTileLayer = null;
+  let customLayerBoundsRect = null; // red outline showing the WMTS layer's extent
 
   const baseLayers = { street: streetLayer, sat: satLayer, custom: null }; // custom filled in once configured
 
@@ -620,6 +621,7 @@
     if(currentLayer === 'custom'){
       if(map.hasLayer(satLayer)) map.removeLayer(satLayer);
       if(baseLayers.custom && map.hasLayer(baseLayers.custom)) map.removeLayer(baseLayers.custom);
+      if(customLayerBoundsRect && map.hasLayer(customLayerBoundsRect)) map.removeLayer(customLayerBoundsRect);
     } else if(baseLayers[currentLayer] && map.hasLayer(baseLayers[currentLayer])){
       map.removeLayer(baseLayers[currentLayer]);
     }
@@ -640,6 +642,7 @@
       // actual ground instead of the plain map background.
       satLayer.addTo(map);
       baseLayers.custom.addTo(map);
+      if(customLayerBoundsRect) customLayerBoundsRect.addTo(map);
     } else if(baseLayers[layer]){
       baseLayers[layer].addTo(map);
     }
@@ -804,6 +807,16 @@
     customTileLayer = L.tileLayer(url, { attribution: attribution || '', maxZoom: 24 });
     baseLayers.custom = customTileLayer;
 
+    // Red outline showing exactly where the WMTS layer's extent ends, so
+    // it's obvious where satellite imagery is taking over underneath.
+    if(customLayerBoundsRect && map.hasLayer(customLayerBoundsRect)) map.removeLayer(customLayerBoundsRect);
+    customLayerBoundsRect = layer.bbox
+      ? L.rectangle(
+          [[layer.bbox.south, layer.bbox.west],[layer.bbox.north, layer.bbox.east]],
+          { color:'#e0392f', weight:2, fill:false, interactive:false }
+        )
+      : null;
+
     // Surface tile-load failures (bad token, wrong template, CORS-blocked
     // provider) instead of silently showing a blank map.
     let tileErrorShown = false;
@@ -819,10 +832,11 @@
     if(currentLayer === 'custom'){
       // Already showing Custom (picking a different layer from the same
       // capabilities doc, or re-applying) — satellite's already underneath,
-      // just swap in the new tile layer on top.
+      // just swap in the new tile layer + outline on top.
       customTileLayer.addTo(map);
+      if(customLayerBoundsRect) customLayerBoundsRect.addTo(map);
     } else {
-      switchToLayer('custom'); // adds satellite underneath + this layer on top
+      switchToLayer('custom'); // adds satellite underneath + this layer + outline on top
     }
 
     // Center on the layer's real-world extent, straight from the
