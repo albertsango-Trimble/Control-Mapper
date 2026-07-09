@@ -22,6 +22,30 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, OPTIONS'
 };
 
+// Given a 200 response body from a candidate content endpoint, figure out
+// whether it IS the CSV content, or whether it's JSON wrapping a further
+// signed pointer URL to fetch (the pattern Trimble's thumbnailUrl field
+// confirmed is real for this API). Returns the final text content, or null
+// if this body doesn't look usable either way.
+async function resolveContent(bodyText, auth) {
+  try {
+    const parsed = JSON.parse(bodyText);
+    const innerUrl =
+      parsed.url || parsed.downloadUrl || parsed.data ||
+      (Array.isArray(parsed.thumbnailUrl) ? parsed.thumbnailUrl[0] : null);
+    if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
+      const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
+      if (innerRes.ok) return await innerRes.text();
+    }
+    return null; // parsed as JSON but no usable pointer in it
+  } catch {
+    // Not JSON at all — if it looks like CSV-ish text (has commas/newlines
+    // and isn't an HTML error page), treat it as the content directly.
+    if (bodyText && !bodyText.trim().startsWith('<')) return bodyText;
+    return null;
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -83,57 +107,46 @@ async function handleDownload(request, url) {
       const meta = await metaRes.json();
 
       // We've now confirmed this host is correct for this project (metadata
-      // resolved). Try the dedicated content-download endpoint here, with
-      // versionId included — our very first attempt at this path lacked
-      // versionId and was tried against the wrong hosts, so it's worth a
-      // clean retry now that both of those are fixed.
-      const dataUrl = new URL(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}/data`);
-      if (versionId) dataUrl.searchParams.set('versionId', versionId);
+      // resolved), and that /files/{id}/data is NOT a valid path (confirmed
+      // INVALID_ENDPOINT on this exact host). Rather than guess one more
+      // single path, try several plausible shapes for the content/download
+      // endpoint — informed by Trimble's own docs referencing a "Download
+      // File via URL" operation, and by the token-URL pattern its
+      // thumbnailUrl field already proved is real for this API.
+      const candidatePaths = [
+        `/tc/api/2.0/files/${encodeURIComponent(fileId)}/downloadurl`,
+        versionId ? `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}/downloadurl` : null,
+        `/tc/api/2.0/files/${encodeURIComponent(fileId)}/content`,
+        versionId ? `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}` : null,
+        versionId ? `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}/content` : null
+      ].filter(Boolean);
 
-      const dataRes = await fetch(dataUrl.toString(), { headers: { Authorization: auth } });
+      const attempts = [];
 
-      if (dataRes.ok) {
-        const bodyText = await dataRes.text();
-        // Trimble's thumbnailUrl field showed a pattern of returning a
-        // signed pointer URL rather than raw bytes directly — so check if
-        // this response is JSON wrapping a further URL to fetch, before
-        // assuming bodyText itself is the CSV content.
+      for (const path of candidatePaths) {
+        const candidateUrl = `${host}${path}`;
         try {
-          const parsed = JSON.parse(bodyText);
-          const innerUrl = parsed.url || parsed.downloadUrl || parsed.data;
-          if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
-            const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
-            if (innerRes.ok) {
-              const innerText = await innerRes.text();
-              return new Response(innerText, {
-                status: 200,
-                headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
-              });
-            }
-            lastStatus = `data endpoint gave a pointer URL, but fetching it failed: ${innerRes.status}`;
-            lastBody = await innerRes.text().catch(() => '');
-          } else {
-            // Parsed as JSON but doesn't look like a pointer wrapper —
-            // unlikely to be CSV content, surface it for inspection.
-            return new Response(
-              `The /data endpoint returned JSON we didn't expect. fileId: ${fileId}. Raw response:\n\n${bodyText}`.slice(0, 1500),
-              { status: 502, headers: CORS_HEADERS }
-            );
+          const candRes = await fetch(candidateUrl, { headers: { Authorization: auth } });
+          if (!candRes.ok) {
+            attempts.push(`${path} -> ${candRes.status}`);
+            continue;
           }
-        } catch {
-          // Not JSON — treat as the raw CSV content directly.
-          return new Response(bodyText, {
-            status: 200,
-            headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
-          });
+          const bodyText = await candRes.text();
+          const result = await resolveContent(bodyText, auth);
+          if (result) {
+            return new Response(result, {
+              status: 200,
+              headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
+            });
+          }
+          attempts.push(`${path} -> 200 but not usable content/pointer: ${bodyText.slice(0, 150)}`);
+        } catch (e) {
+          attempts.push(`${path} -> network error: ${e}`);
         }
-      } else {
-        lastStatus = `/data endpoint: ${dataRes.status}`;
-        lastBody = await dataRes.text().catch(() => '');
       }
 
       // Fall back: look for a download link directly on the metadata object,
-      // in case the /data endpoint isn't it after all.
+      // in case none of the guessed paths above are it either.
       const downloadUrl =
         meta.downloadUrl ||
         meta.url ||
@@ -154,11 +167,11 @@ async function handleDownload(request, url) {
         continue;
       }
 
-      // We got file metadata but couldn't find a download link in it under
-      // any of the field names we checked. Surface the raw shape so we can
-      // see Trimble's actual field names instead of guessing further.
+      // We got file metadata but none of the guessed content endpoints
+      // worked, and there's no obvious download link on the metadata
+      // object itself. Surface everything we tried.
       return new Response(
-        `Got file metadata but no working download link. fileId: ${fileId}. /data endpoint result: ${lastStatus} ${lastBody}. Raw metadata:\n\n${JSON.stringify(meta, null, 2)}`.slice(0, 1500),
+        `Got file metadata but no working download link. fileId: ${fileId}. Attempts:\n${attempts.join('\n')}\n\nRaw metadata:\n${JSON.stringify(meta, null, 2)}`.slice(0, 2000),
         { status: 502, headers: CORS_HEADERS }
       );
     } catch (e) {
