@@ -422,50 +422,17 @@
         <div id="drop">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#3e6b8a" stroke-width="1.6"><path d="M12 3v12m0-12l-4 4m4-4l4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
           <div class="t1">Drop CSV, or click to browse</div>
-          <div class="t2">expects columns for point ID, X, Y</div>
+          <div class="t2">no header row — columns: ID, X, Y, Z, Description</div>
         </div>
         <input type="file" id="fileInput" accept=".csv,text/csv" />
         <button class="btn full small" id="browseConnectBtn" style="margin-top:8px;" disabled>◎ Browse from Trimble Connect…</button>
         <div id="fileChipHolder" style="margin-top:10px;"></div>
-      </div>
-
-      <!-- 2. Column mapping -->
-      <div class="section" id="section-map" style="display:none;">
-        <p class="section-label"><span class="num">02</span> Map columns</p>
-        <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12.5px; color:var(--ink-dim); cursor:pointer;">
-          <input type="checkbox" id="noHeaderToggle" style="width:auto;">
-          This file has no header row (first row is already data)
-        </label>
-        <div class="field">
-          <label>Point ID / name</label>
-          <select id="colId"></select>
-        </div>
-        <div class="col-grid">
-          <div class="field">
-            <label>X (easting)</label>
-            <select id="colX"></select>
-          </div>
-          <div class="field">
-            <label>Y (northing)</label>
-            <select id="colY"></select>
-          </div>
-        </div>
-        <div class="col-grid">
-          <div class="field">
-            <label>Z (elevation, optional)</label>
-            <select id="colZ"></select>
-          </div>
-          <div class="field">
-            <label>Description (optional)</label>
-            <select id="colDesc"></select>
-          </div>
-        </div>
-        <div class="hint"><b><span id="rowCount">0</span> points</b> parsed from file.</div>
+        <div class="hint" id="rowCountHint" style="display:none;"><b><span id="rowCount">0</span> points</b> parsed from file.</div>
       </div>
 
       <!-- 3. Coordinate system -->
       <div class="section" id="section-crs" style="display:none;">
-        <p class="section-label"><span class="num">03</span> Coordinate system</p>
+        <p class="section-label"><span class="num">02</span> Coordinate system</p>
 
         <div id="tcConnectionInfo" class="status-line warn" style="margin-top:0;">
           <span class="dot"></span><span>Standalone mode — not running inside Trimble Connect.</span>
@@ -514,7 +481,7 @@
 
       <!-- 4. Points list -->
       <div class="section" id="section-points" style="display:none;">
-        <p class="section-label"><span class="num">04</span> Points <span style="color:var(--ink-dim); font-weight:400;">(<span id="plottedCount">0</span> plotted)</span></p>
+        <p class="section-label"><span class="num">03</span> Points <span style="color:var(--ink-dim); font-weight:400;">(<span id="plottedCount">0</span> plotted)</span></p>
         <div class="table-wrap">
           <table id="pointTable">
             <thead><tr><th>ID</th><th>X</th><th>Y</th><th>Z</th></tr></thead>
@@ -938,9 +905,6 @@
     if(f) handleFile(f);
   });
 
-  let rawCsvText = ''; // kept so the "no header row" toggle can re-parse without re-fetching
-  let noHeaderOverride = null; // null = auto-detect, true/false = user override
-
   function handleFile(file){
     file.text().then(text => processCsvText(text, file.name)).catch(err=>{
       alert('Could not read that file: ' + err.message);
@@ -951,67 +915,38 @@
     processCsvText(text, name);
   }
 
+  // Fixed format for every CSV this extension accepts: no header row,
+  // columns in order ID, X, Y, Z (optional), Description (optional).
   function processCsvText(text, name){
-    console.log('[Control Mapper] CSV text length:', text.length);
-    console.log('[Control Mapper] CSV text preview:', JSON.stringify(text.slice(0,300)));
-    rawCsvText = text;
-    const useNoHeader = noHeaderOverride !== null ? noHeaderOverride : detectNoHeader(text);
-    console.log('[Control Mapper] detectNoHeader result:', useNoHeader);
-    document.getElementById('noHeaderToggle').checked = useNoHeader;
-    parseWithHeaderSetting(text, name, useNoHeader);
-  }
-
-  // Heuristic: parse the first row and see if it looks like data (mostly
-  // numeric fields) rather than column names. This is exactly the shape a
-  // survey CSV with no header takes: "S0,292401.892,5862706.789,661.322,SM".
-  function detectNoHeader(text){
-    const firstLine = text.split(/\r\n|\r|\n/).find(l => l.trim().length > 0);
-    if(!firstLine) return false;
-    const fields = firstLine.split(',');
-    const numericCount = fields.filter(f => f.trim() !== '' && !isNaN(parseFloat(f)) && isFinite(f)).length;
-    // If at least 2 fields (or more than half) parse as plain numbers, this
-    // is very unlikely to be a header row of column names.
-    return numericCount >= 2 && numericCount >= fields.length / 2;
-  }
-
-  function parseWithHeaderSetting(text, name, noHeader){
-    if(noHeader){
-      const results = Papa.parse(text, { header:false, skipEmptyLines:true, dynamicTyping:false, delimiter:',' });
-      if(results.errors && results.errors.length){
-        alert('Could not parse that CSV: ' + results.errors[0].message);
-        return;
-      }
-      const width = results.data.reduce((max,row)=>Math.max(max,row.length), 0);
-      const synthHeaders = Array.from({length: width}, (_,i)=>`Column ${i+1}`);
-      const rows = results.data.map(row=>{
-        const obj = {};
-        synthHeaders.forEach((h,i)=> obj[h] = row[i] ?? '');
-        return obj;
-      });
-      ingestParsedCsv({ meta:{fields: synthHeaders}, data: rows }, name);
-    } else {
-      const results = Papa.parse(text, { header:true, skipEmptyLines:true, dynamicTyping:false, delimiter:',' });
-      if(results.errors && results.errors.length){
-        alert('Could not parse that CSV: ' + results.errors[0].message);
-        return;
-      }
-      ingestParsedCsv(results, name);
+    const results = Papa.parse(text, { header:false, skipEmptyLines:true, dynamicTyping:false, delimiter:',' });
+    if(results.errors && results.errors.length){
+      alert('Could not parse that CSV: ' + results.errors[0].message);
+      return;
     }
+    const width = results.data.reduce((max,row)=>Math.max(max,row.length), 0);
+    const synthHeaders = Array.from({length: width}, (_,i)=>`Column ${i+1}`);
+    const rows = results.data.map(row=>{
+      const obj = {};
+      synthHeaders.forEach((h,i)=> obj[h] = row[i] ?? '');
+      return obj;
+    });
+    ingestParsedCsv({ meta:{fields: synthHeaders}, data: rows }, name);
   }
-
-  document.getElementById('noHeaderToggle').addEventListener('change', e=>{
-    noHeaderOverride = e.target.checked;
-    if(rawCsvText) parseWithHeaderSetting(rawCsvText, currentFileName, noHeaderOverride);
-  });
-
-  let currentFileName = '';
 
   function ingestParsedCsv(results, name){
-    currentFileName = name;
     headers = results.meta.fields || [];
     rawRows = results.data;
+    mapping = { id: headers[0]||null, x: headers[1]||null, y: headers[2]||null, z: headers[3]||null, desc: headers[4]||null };
+
     showFileChip(name, rawRows.length);
-    setupColumnMapping();
+    document.getElementById('rowCount').textContent = rawRows.length;
+    document.getElementById('rowCountHint').style.display = 'block';
+
+    document.getElementById('section-crs').style.display = 'block';
+    document.getElementById('section-points').style.display = 'block';
+    populateCpPicker();
+    renderPointTable();
+
     resetGeoref();
   }
 
@@ -1022,87 +957,6 @@
         <button id="chipRemove" title="Remove">✕</button>
       </div>`;
     document.getElementById('chipRemove').addEventListener('click', fullReset);
-  }
-
-
-  // ---------------- Column mapping ----------------
-  function setupColumnMapping(){
-    document.getElementById('section-map').style.display = 'block';
-    document.getElementById('rowCount').textContent = rawRows.length;
-
-    const guesses = guessColumns(headers);
-    mapping = guesses;
-
-    fillSelect('colId', headers, guesses.id, true);
-    fillSelect('colX', headers, guesses.x, false);
-    fillSelect('colY', headers, guesses.y, false);
-    fillSelect('colZ', headers, guesses.z, true);
-    fillSelect('colDesc', headers, guesses.desc, true);
-
-    ['colId','colX','colY','colZ','colDesc'].forEach(elId=>{
-      document.getElementById(elId).addEventListener('change', onMappingChange);
-    });
-
-    onMappingChange();
-  }
-
-  function guessColumns(hdrs){
-    const norm = h => h.toLowerCase().replace(/[^a-z0-9]/g,'');
-    const find = (cands) => hdrs.find(h => cands.includes(norm(h))) || null;
-    // Synthetic "Column N" headers (no-header CSVs) won't match any of
-    // these named patterns, which is fine — user maps them manually via
-    // the dropdowns. As a small extra courtesy, if every header looks like
-    // "Column N", assume the common survey-file column order: ID, X, Y, Z,
-    // Description — so the common case still auto-fills correctly.
-    const isSynthetic = hdrs.length > 0 && hdrs.every(h => /^Column \d+$/.test(h));
-    if(isSynthetic){
-      return {
-        id: hdrs[0] || null,
-        x: hdrs[1] || null,
-        y: hdrs[2] || null,
-        z: hdrs[3] || null,
-        desc: hdrs[4] || null
-      };
-    }
-    return {
-      id:   find(['id','pointid','ptid','name','pointname','point','label']),
-      x:    find(['x','easting','east','pointx','xcoord','coordx']),
-      y:    find(['y','northing','north','pointy','ycoord','coordy']),
-      z:    find(['z','elevation','elev','height','pointz','zcoord','coordz','altitude']),
-      desc: find(['desc','description','code','notes','remark','remarks','type'])
-    };
-  }
-
-  function fillSelect(elId, hdrs, selected, allowNone){
-    const sel = document.getElementById(elId);
-    sel.innerHTML = '';
-    if(allowNone){
-      const o = document.createElement('option');
-      o.value=''; o.textContent='— none —';
-      sel.appendChild(o);
-    }
-    hdrs.forEach(h=>{
-      const o = document.createElement('option');
-      o.value = h; o.textContent = h;
-      if(h === selected) o.selected = true;
-      sel.appendChild(o);
-    });
-    if(!allowNone && !selected && hdrs.length) sel.selectedIndex = 0;
-  }
-
-  function onMappingChange(){
-    mapping.id = document.getElementById('colId').value || null;
-    mapping.x = document.getElementById('colX').value || null;
-    mapping.y = document.getElementById('colY').value || null;
-    mapping.z = document.getElementById('colZ').value || null;
-    mapping.desc = document.getElementById('colDesc').value || null;
-
-    if(mapping.x && mapping.y){
-      document.getElementById('section-crs').style.display = 'block';
-      document.getElementById('section-points').style.display = 'block';
-      populateCpPicker();
-      renderPointTable();
-    }
   }
 
   function getPoints(){
@@ -1506,10 +1360,8 @@
 
   function fullReset(){
     rawRows = []; headers = []; mapping = {id:null,x:null,y:null,z:null,desc:null};
-    rawCsvText = ''; noHeaderOverride = null; currentFileName = '';
-    document.getElementById('noHeaderToggle').checked = false;
     document.getElementById('fileChipHolder').innerHTML = '';
-    document.getElementById('section-map').style.display = 'none';
+    document.getElementById('rowCountHint').style.display = 'none';
     document.getElementById('section-crs').style.display = 'none';
     document.getElementById('section-points').style.display = 'none';
     fileInput.value = '';
