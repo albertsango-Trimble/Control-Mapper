@@ -30,9 +30,24 @@ const CORS_HEADERS = {
 async function resolveContent(bodyText, auth) {
   try {
     const parsed = JSON.parse(bodyText);
-    const innerUrl =
-      parsed.url || parsed.downloadUrl || parsed.data ||
-      (Array.isArray(parsed.thumbnailUrl) ? parsed.thumbnailUrl[0] : null);
+
+    const pointerFrom = (obj) =>
+      obj && (obj.url || obj.downloadUrl || obj.data ||
+        (Array.isArray(obj.thumbnailUrl) ? obj.thumbnailUrl[0] : null));
+
+    // Array response (e.g. a versions list) — check entries newest-first.
+    if (Array.isArray(parsed)) {
+      for (let i = parsed.length - 1; i >= 0; i--) {
+        const innerUrl = pointerFrom(parsed[i]);
+        if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
+          const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
+          if (innerRes.ok) return await innerRes.text();
+        }
+      }
+      return null;
+    }
+
+    const innerUrl = pointerFrom(parsed);
     if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
       const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
       if (innerRes.ok) return await innerRes.text();
@@ -114,12 +129,8 @@ async function handleDownload(request, url) {
       // File via URL" operation, and by the token-URL pattern its
       // thumbnailUrl field already proved is real for this API.
       const candidatePaths = [
-        `/tc/api/2.0/files/${encodeURIComponent(fileId)}/downloadurl`,
-        versionId ? `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}/downloadurl` : null,
-        `/tc/api/2.0/files/${encodeURIComponent(fileId)}/content`,
-        versionId ? `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}` : null,
-        versionId ? `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(versionId)}/content` : null
-      ].filter(Boolean);
+        `/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions` // list all versions — a version entry may carry its own pointer URL, like thumbnailUrl does
+      ];
 
       const attempts = [];
 
@@ -148,7 +159,7 @@ async function handleDownload(request, url) {
               headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
             });
           }
-          attempts.push(`${path} -> 200 but not usable content/pointer: ${bodyText.slice(0, 150)}`);
+          attempts.push(`${path} -> 200 but not usable content/pointer: ${bodyText.slice(0, 600)}`);
         } catch (e) {
           attempts.push(`${path} -> network error: ${e}`);
         }
@@ -180,7 +191,7 @@ async function handleDownload(request, url) {
       // worked, and there's no obvious download link on the metadata
       // object itself. Surface everything we tried.
       return new Response(
-        `Got file metadata but no working download link. fileId: ${fileId}. Attempts:\n${attempts.join('\n')}\n\nRaw metadata:\n${JSON.stringify(meta, null, 2)}`.slice(0, 2000),
+        `Got file metadata but no working download link. fileId: ${fileId}. Attempts:\n${attempts.join('\n')}\n\nRaw metadata:\n${JSON.stringify(meta, null, 2)}`.slice(0, 3000),
         { status: 502, headers: CORS_HEADERS }
       );
     } catch (e) {
