@@ -126,9 +126,18 @@ async function handleDownload(request, url) {
       for (const path of candidatePaths) {
         const candidateUrl = `${host}${path}`;
         try {
-          const candRes = await fetch(candidateUrl, { headers: { Authorization: auth } });
+          let candRes = await fetch(candidateUrl, { headers: { Authorization: auth } });
+          if (candRes.status === 400) {
+            // A 400 (vs 404) means the route exists but rejected this
+            // specific request — commonly a missing Accept header on
+            // content/download endpoints. Worth one retry before giving up.
+            candRes = await fetch(candidateUrl, {
+              headers: { Authorization: auth, Accept: 'application/octet-stream, text/csv, */*' }
+            });
+          }
           if (!candRes.ok) {
-            attempts.push(`${path} -> ${candRes.status}`);
+            const errBody = await candRes.text().catch(() => '');
+            attempts.push(`${path} -> ${candRes.status} ${errBody.slice(0, 200)}`);
             continue;
           }
           const bodyText = await candRes.text();
