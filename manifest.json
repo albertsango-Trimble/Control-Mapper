@@ -1,0 +1,8 @@
+{
+  "url": "https://point-mapper-csv.netlify.app/index.html",
+  "title": "Point Mapper",
+  "description": "Upload a CSV of survey points and view them plotted on a street or satellite base map.",
+  "icon": "https://point-mapper-csv.netlify.app/images.png",
+  "infoUrl": "https://point-mapper-csv.netlify.app/README.md",
+  "enabled": true
+}
