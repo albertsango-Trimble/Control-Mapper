@@ -136,6 +136,21 @@
     color:var(--ink-dim);
   }
 
+  .section-label.collapsible{
+    cursor:pointer;
+    user-select:none;
+  }
+  .section-label.collapsible:hover{ color:var(--copper); }
+  .section-label .chevron{
+    margin-left:auto;
+    color:var(--ink-dim);
+    font-size:9px;
+    transition:transform .15s ease;
+    flex-shrink:0;
+  }
+  .section.collapsed > *:not(.section-label){ display:none !important; }
+  .section.collapsed .section-label .chevron{ transform:rotate(-90deg); }
+
   .btn{
     font-family:var(--font-ui);
     font-weight:600;
@@ -418,7 +433,7 @@
 
       <!-- 1. Upload -->
       <div class="section" id="section-upload">
-        <p class="section-label"><span class="num">01</span> Import CSV</p>
+        <p class="section-label collapsible" data-target="section-upload"><span class="num">01</span> Import CSV<span class="chevron">▾</span></p>
         <div id="drop">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#3e6b8a" stroke-width="1.6"><path d="M12 3v12m0-12l-4 4m4-4l4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
           <div class="t1">Drop CSV, or click to browse</div>
@@ -432,7 +447,7 @@
 
       <!-- 3. Coordinate system -->
       <div class="section" id="section-crs" style="display:none;">
-        <p class="section-label"><span class="num">02</span> Coordinate system</p>
+        <p class="section-label collapsible" data-target="section-crs"><span class="num">02</span> Coordinate system<span class="chevron">▾</span></p>
 
         <div id="tcConnectionInfo" class="status-line warn" style="margin-top:0;">
           <span class="dot"></span><span>Standalone mode — not running inside Trimble Connect.</span>
@@ -481,7 +496,7 @@
 
       <!-- 4. Points list -->
       <div class="section" id="section-points" style="display:none;">
-        <p class="section-label"><span class="num">03</span> Points <span style="color:var(--ink-dim); font-weight:400;">(<span id="plottedCount">0</span> plotted)</span></p>
+        <p class="section-label collapsible" data-target="section-points"><span class="num">03</span> Points <span style="color:var(--ink-dim); font-weight:400;">(<span id="plottedCount">0</span> plotted)</span><span class="chevron">▾</span></p>
         <div class="table-wrap">
           <table id="pointTable">
             <thead><tr><th>ID</th><th>X</th><th>Y</th><th>Z</th></tr></thead>
@@ -903,6 +918,14 @@
   fileInput.addEventListener('change', e=>{
     const f = e.target.files[0];
     if(f) handleFile(f);
+  });
+
+  // ---------------- Collapsible sidebar sections ----------------
+  document.querySelectorAll('.section-label.collapsible').forEach(label=>{
+    label.addEventListener('click', ()=>{
+      const section = label.closest('.section');
+      if(section) section.classList.toggle('collapsed');
+    });
   });
 
   function handleFile(file){
