@@ -324,7 +324,7 @@
   }
   #customLayerPanel{
     position:absolute; top:54px; right:14px; z-index:1000;
-    width:320px; padding:16px; display:none;
+    width:340px; max-height:80vh; overflow-y:auto; padding:16px; display:none;
   }
 
   #pickBanner{
@@ -533,22 +533,51 @@
 
     <div id="customLayerPanel" class="glass-panel" style="display:none;">
       <p class="section-label" style="margin:0 0 10px;"><span class="num">◈</span> Custom base map</p>
-      <div class="field">
-        <label>Tile URL template</label>
-        <input type="text" id="customLayerUrl" placeholder="https://.../{z}/{x}/{y}.png?token=...">
+
+      <div class="col-grid" style="margin-bottom:12px;">
+        <button class="btn small mode-active" id="modeTileUrlBtn" data-mode="tileurl">Tile URL</button>
+        <button class="btn small" id="modeWmtsBtn" data-mode="wmts">WMTS Capabilities</button>
       </div>
-      <div class="field">
-        <label>Attribution (optional)</label>
-        <input type="text" id="customLayerAttribution" placeholder="© Propeller Aero">
+
+      <!-- Mode 1: direct tile URL template -->
+      <div id="tileUrlModePanel">
+        <div class="field">
+          <label>Tile URL template</label>
+          <input type="text" id="customLayerUrl" placeholder="https://.../{z}/{x}/{y}.png?token=...">
+        </div>
+        <div class="field">
+          <label>Attribution (optional)</label>
+          <input type="text" id="customLayerAttribution" placeholder="© Propeller Aero">
+        </div>
+        <p class="hint">
+          For a URL that already has <b>{z}</b>/<b>{x}</b>/<b>{y}</b> (or the
+          OGC <b>{TileMatrix}</b>/<b>{TileCol}</b>/<b>{TileRow}</b>) baked in.
+        </p>
       </div>
-      <p class="hint">
-        Works with standard XYZ tile URLs and RESTful WMTS templates. Use
-        <b>{z}</b>/<b>{x}</b>/<b>{y}</b> — or the OGC-style
-        <b>{TileMatrix}</b>/<b>{TileCol}</b>/<b>{TileRow}</b>, which get
-        converted automatically. For Propeller Aero: open your site in
-        Propeller, go to <b>Share → Embed / WMTS</b>, and copy the tile URL
-        template from there.
-      </p>
+
+      <!-- Mode 2: WMTS GetCapabilities XML — we fetch + parse it and derive the tile URL -->
+      <div id="wmtsModePanel" style="display:none;">
+        <div class="field">
+          <label>WMTS Capabilities URL</label>
+          <input type="text" id="wmtsCapsUrl" placeholder="https://.../WMTSCapabilities.xml?request=GetCapabilities...">
+        </div>
+        <button class="btn full small" id="wmtsLoadBtn">Load layers</button>
+        <div id="wmtsCapsStatus"></div>
+        <div class="field" id="wmtsLayerField" style="display:none; margin-top:10px;">
+          <label>Layer</label>
+          <select id="wmtsLayerSelect"></select>
+        </div>
+        <div class="field" id="wmtsAttributionField" style="display:none;">
+          <label>Attribution (optional)</label>
+          <input type="text" id="wmtsAttribution" placeholder="© Propeller Aero">
+        </div>
+        <p class="hint">
+          Paste the <b>GetCapabilities</b> URL from your provider (for
+          Propeller Aero: site → <b>Share → WMTS</b>) — we'll read it and
+          find the actual tile URL and layers automatically.
+        </p>
+      </div>
+
       <div id="customLayerStatus"></div>
       <div class="col-grid" style="margin-top:10px;">
         <button class="btn small" id="customLayerCancelBtn">Cancel</button>
@@ -652,15 +681,131 @@
   });
   document.getElementById('customLayerCancelBtn').addEventListener('click', closeCustomLayerPanel);
 
+  // ---- Mode toggle: direct tile URL vs WMTS Capabilities ----
+  let customLayerMode = 'tileurl';
+  let wmtsLayers = [];       // parsed from the last-loaded capabilities doc
+  let wmtsKvpBase = null;    // fallback GetTile endpoint if no RESTful template
+
+  function setCustomLayerMode(mode){
+    customLayerMode = mode;
+    document.getElementById('modeTileUrlBtn').classList.toggle('mode-active', mode==='tileurl');
+    document.getElementById('modeWmtsBtn').classList.toggle('mode-active', mode==='wmts');
+    document.getElementById('tileUrlModePanel').style.display = mode==='tileurl' ? 'block' : 'none';
+    document.getElementById('wmtsModePanel').style.display = mode==='wmts' ? 'block' : 'none';
+    setCustomLayerStatus('', '');
+  }
+  document.getElementById('modeTileUrlBtn').addEventListener('click', ()=>setCustomLayerMode('tileurl'));
+  document.getElementById('modeWmtsBtn').addEventListener('click', ()=>setCustomLayerMode('wmts'));
+
+  // ---- WMTS Capabilities: fetch (via our proxy, to sidestep CORS) + parse ----
+  document.getElementById('wmtsLoadBtn').addEventListener('click', loadWmtsCapabilities);
+
+  async function loadWmtsCapabilities(){
+    const capsUrl = document.getElementById('wmtsCapsUrl').value.trim();
+    if(!capsUrl){ setCustomLayerStatus('err','Paste a WMTS Capabilities URL first.'); return; }
+
+    setCustomLayerStatus('warn', 'Fetching capabilities…');
+    document.getElementById('wmtsLayerField').style.display = 'none';
+    document.getElementById('wmtsAttributionField').style.display = 'none';
+
+    try{
+      const res = await fetch(`/api/proxy-fetch?url=${encodeURIComponent(capsUrl)}`);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+
+      const doc = new DOMParser().parseFromString(text, 'application/xml');
+      if(doc.getElementsByTagName('parsererror').length){
+        throw new Error('Response was not valid XML — double check this is a GetCapabilities URL.');
+      }
+
+      const getLocalText = (el, tag) => {
+        const found = el.getElementsByTagNameNS('*', tag)[0];
+        return found ? found.textContent.trim() : null;
+      };
+
+      const layerEls = Array.from(doc.getElementsByTagNameNS('*','Layer'))
+        .filter(el => el.getElementsByTagNameNS('*','Identifier').length); // top-level WMTS layers only
+
+      wmtsLayers = layerEls.map(layerEl=>{
+        const identifier = getLocalText(layerEl, 'Identifier');
+        const title = getLocalText(layerEl, 'Title') || identifier;
+        const format = getLocalText(layerEl, 'Format') || 'image/png';
+        const tmsEl = layerEl.getElementsByTagNameNS('*','TileMatrixSet')[0];
+        const tileMatrixSet = tmsEl ? tmsEl.textContent.trim() : null;
+        const styleEl = layerEl.getElementsByTagNameNS('*','Style')[0];
+        const style = styleEl ? (getLocalText(styleEl,'Identifier') || '') : '';
+        const resourceUrlEl = Array.from(layerEl.getElementsByTagNameNS('*','ResourceURL'))
+          .find(el => el.getAttribute('resourceType') === 'tile');
+        const template = resourceUrlEl ? resourceUrlEl.getAttribute('template') : null;
+        return { identifier, title, format, tileMatrixSet, style, template };
+      }).filter(l => l.identifier);
+
+      // Fallback KVP GetTile base URL, for older/non-RESTful WMTS servers
+      // where layers don't carry their own ResourceURL template.
+      wmtsKvpBase = null;
+      const opEls = Array.from(doc.getElementsByTagNameNS('*','Operation'));
+      const getTileOp = opEls.find(op => op.getAttribute('name') === 'GetTile');
+      if(getTileOp){
+        const getEl = getTileOp.getElementsByTagNameNS('*','Get')[0];
+        if(getEl){
+          wmtsKvpBase = getEl.getAttributeNS('http://www.w3.org/1999/xlink','href') || getEl.getAttribute('href');
+        }
+      }
+
+      if(!wmtsLayers.length){
+        setCustomLayerStatus('err','No layers found in this capabilities document.');
+        return;
+      }
+
+      const sel = document.getElementById('wmtsLayerSelect');
+      sel.innerHTML = '';
+      wmtsLayers.forEach((l,i)=>{
+        const o = document.createElement('option');
+        o.value = i; o.textContent = l.title;
+        sel.appendChild(o);
+      });
+
+      document.getElementById('wmtsLayerField').style.display = 'block';
+      document.getElementById('wmtsAttributionField').style.display = 'block';
+      setCustomLayerStatus('ok', `Found ${wmtsLayers.length} layer${wmtsLayers.length===1?'':'s'}. Pick one and click Apply.`);
+    }catch(e){
+      setCustomLayerStatus('err', `Couldn't load capabilities (${e.message}).`);
+    }
+  }
+
+  function buildWmtsTileUrl(layer){
+    if(layer.template){
+      return layer.template.replace(/\{TileMatrix\}/gi,'{z}').replace(/\{TileCol\}/gi,'{x}').replace(/\{TileRow\}/gi,'{y}');
+    }
+    if(wmtsKvpBase && layer.tileMatrixSet){
+      const sep = wmtsKvpBase.includes('?') ? '&' : '?';
+      return `${wmtsKvpBase}${sep}SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${encodeURIComponent(layer.identifier)}`
+        + `&STYLE=${encodeURIComponent(layer.style||'')}&TILEMATRIXSET=${encodeURIComponent(layer.tileMatrixSet)}`
+        + `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=${encodeURIComponent(layer.format||'image/png')}`;
+    }
+    return null;
+  }
+
+  // ---- Apply (shared by both modes) ----
   document.getElementById('customLayerApplyBtn').addEventListener('click', ()=>{
-    let url = document.getElementById('customLayerUrl').value.trim();
-    const attribution = document.getElementById('customLayerAttribution').value.trim();
+    let url, attribution;
 
-    if(!url){ setCustomLayerStatus('err','Paste a tile URL template first.'); return; }
-
-    // Accept OGC-style RESTful WMTS placeholder names too, converting them
-    // to the {z}/{x}/{y} form Leaflet expects.
-    url = url.replace(/\{TileMatrix\}/gi,'{z}').replace(/\{TileCol\}/gi,'{x}').replace(/\{TileRow\}/gi,'{y}');
+    if(customLayerMode === 'wmts'){
+      if(!wmtsLayers.length){ setCustomLayerStatus('err','Load a capabilities document first.'); return; }
+      const layer = wmtsLayers[+document.getElementById('wmtsLayerSelect').value];
+      url = buildWmtsTileUrl(layer);
+      attribution = document.getElementById('wmtsAttribution').value.trim();
+      if(!url){
+        setCustomLayerStatus('err', `Couldn't determine a tile URL for "${layer.title}" — it has no RESTful template and no usable GetTile endpoint was found.`);
+        return;
+      }
+    } else {
+      url = document.getElementById('customLayerUrl').value.trim();
+      attribution = document.getElementById('customLayerAttribution').value.trim();
+      if(!url){ setCustomLayerStatus('err','Paste a tile URL template first.'); return; }
+      // Accept OGC-style RESTful WMTS placeholder names too.
+      url = url.replace(/\{TileMatrix\}/gi,'{z}').replace(/\{TileCol\}/gi,'{x}').replace(/\{TileRow\}/gi,'{y}');
+    }
 
     if(!/\{z\}/.test(url) || !/\{x\}/.test(url) || !/\{y\}/.test(url)){
       setCustomLayerStatus('err','URL must contain {z}, {x} and {y} placeholders (or the WMTS {TileMatrix}/{TileCol}/{TileRow} equivalents).');
@@ -677,7 +822,7 @@
     customTileLayer.on('tileerror', ()=>{
       if(tileErrorShown) return;
       tileErrorShown = true;
-      setCustomLayerStatus('warn', "Applied, but some tiles failed to load — double check the URL, token, and that the provider allows this domain.");
+      setCustomLayerStatus('warn', "Applied, but some tiles failed to load — double check the URL/token and that the provider allows this domain.");
     });
 
     setCustomLayerStatus('ok', 'Applied.');
