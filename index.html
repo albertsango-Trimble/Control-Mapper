@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Point Mapper — Trimble Connect Extension</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --navy-950:#0a1420;
+    --navy-900:#0f1c2e;
+    --navy-800:#16283e;
+    --navy-700:#1f3550;
+    --line-cyan:#3e6b8a;
+    --line-cyan-dim:#294a63;
+    --paper:#ede6d6;
+    --paper-dim:#c9c0ab;
+    --ink:#e8edf2;
+    --ink-dim:#8fa3b8;
+    --copper:#c97b3d;
+    --copper-bright:#e0954f;
+    --green:#5b8c5a;
+    --red:#c0564a;
+    --font-ui:'Space Grotesk', sans-serif;
+    --font-mono:'IBM Plex Mono', monospace;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    font-family:var(--font-ui);
+    background:var(--navy-950);
+    color:var(--ink);
+    overflow:hidden;
+  }
+
+  #app{ display:flex; height:100vh; width:100vw; }
+
+  /* ---------- Sidebar : the "field book" ---------- */
+  #sidebar{
+    width:380px;
+    min-width:380px;
+    background:var(--navy-900);
+    border-right:1px solid var(--line-cyan-dim);
+    display:flex;
+    flex-direction:column;
+    position:relative;
+    overflow:hidden;
+  }
+  #sidebar::before{
+    content:'';
+    position:absolute;
+    left:0; top:0; bottom:0;
+    width:26px;
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0px, transparent 14px,
+      var(--line-cyan-dim) 14px, var(--line-cyan-dim) 15px
+    );
+    background-position: left top;
+    opacity:.5;
+    pointer-events:none;
+  }
+  #sidebar-inner{
+    position:relative;
+    z-index:1;
+    padding:20px 20px 20px 40px;
+    overflow-y:auto;
+    flex:1;
+  }
+  #sidebar-inner::-webkit-scrollbar{ width:8px; }
+  #sidebar-inner::-webkit-scrollbar-thumb{ background:var(--navy-700); border-radius:4px; }
+
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:4px;
+  }
+  .brand-mark{
+    width:28px; height:28px;
+    border:2px solid var(--copper);
+    border-radius:50%;
+    position:relative;
+    flex-shrink:0;
+  }
+  .brand-mark::before, .brand-mark::after{
+    content:'';
+    position:absolute;
+    background:var(--copper);
+  }
+  .brand-mark::before{ left:50%; top:-4px; bottom:-4px; width:2px; transform:translateX(-50%); }
+  .brand-mark::after{ top:50%; left:-4px; right:-4px; height:2px; transform:translateY(-50%); }
+  .brand h1{
+    font-size:16px;
+    font-weight:700;
+    letter-spacing:.02em;
+    margin:0;
+  }
+  .brand p{
+    margin:2px 0 0;
+    font-family:var(--font-mono);
+    font-size:10.5px;
+    color:var(--ink-dim);
+    letter-spacing:.06em;
+    text-transform:uppercase;
+  }
+
+  .section{
+    margin-top:26px;
+    padding-top:18px;
+    border-top:1px dashed var(--line-cyan-dim);
+  }
+  .section:first-of-type{ border-top:none; margin-top:20px; }
+
+  .section-label{
+    font-family:var(--font-mono);
+    font-size:10px;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--copper-bright);
+    margin:0 0 10px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .section-label .num{
+    color:var(--ink-dim);
+  }
+
+  .btn{
+    font-family:var(--font-ui);
+    font-weight:600;
+    font-size:13px;
+    border:1px solid var(--line-cyan);
+    background:var(--navy-800);
+    color:var(--ink);
+    padding:9px 14px;
+    border-radius:6px;
+    cursor:pointer;
+    transition:background .15s ease, border-color .15s ease;
+  }
+  .btn:hover{ background:var(--navy-700); border-color:var(--copper); }
+  .btn:disabled{ opacity:.4; cursor:not-allowed; }
+  .btn.primary{
+    background:var(--copper);
+    border-color:var(--copper);
+    color:var(--navy-950);
+  }
+  .btn.primary:hover{ background:var(--copper-bright); }
+  .btn.full{ width:100%; }
+  .btn.small{ padding:5px 10px; font-size:11.5px; }
+  .btn.mode-active{ background:var(--copper); border-color:var(--copper); color:var(--navy-950); }
+
+  #drop{
+    border:1.5px dashed var(--line-cyan);
+    border-radius:8px;
+    padding:22px 14px;
+    text-align:center;
+    cursor:pointer;
+    transition:border-color .15s ease, background .15s ease;
+  }
+  #drop:hover, #drop.drag{ border-color:var(--copper); background:rgba(201,123,61,.06); }
+  #drop svg{ margin-bottom:8px; }
+  #drop .t1{ font-size:13px; font-weight:600; margin-bottom:2px; }
+  #drop .t2{ font-family:var(--font-mono); font-size:10.5px; color:var(--ink-dim); }
+  #fileInput{ display:none; }
+
+  .file-chip{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    background:var(--navy-800);
+    border:1px solid var(--line-cyan-dim);
+    border-radius:6px;
+    padding:8px 10px;
+    font-family:var(--font-mono);
+    font-size:11.5px;
+  }
+  .file-chip button{
+    background:none; border:none; color:var(--ink-dim); cursor:pointer; font-size:14px; line-height:1;
+  }
+  .file-chip button:hover{ color:var(--red); }
+
+  .field{ margin-bottom:10px; }
+  .field label{
+    display:block;
+    font-family:var(--font-mono);
+    font-size:10px;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    margin-bottom:4px;
+  }
+  select, input[type=text], input[type=number]{
+    width:100%;
+    background:var(--navy-800);
+    border:1px solid var(--line-cyan-dim);
+    color:var(--ink);
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    padding:7px 8px;
+    border-radius:5px;
+  }
+  select:focus, input:focus{ outline:none; border-color:var(--copper); }
+
+  .col-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  .hint{
+    font-size:11.5px;
+    color:var(--ink-dim);
+    line-height:1.5;
+    margin:6px 0 0;
+  }
+  .hint b{ color:var(--ink); }
+
+  /* control point rows */
+  #cpList{ display:flex; flex-direction:column; gap:8px; }
+  .cp-row{
+    background:var(--navy-800);
+    border:1px solid var(--line-cyan-dim);
+    border-radius:6px;
+    padding:9px 10px;
+  }
+  .cp-row.armed{ border-color:var(--copper); box-shadow:0 0 0 1px var(--copper) inset; }
+  .cp-row-top{
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;
+  }
+  .cp-row-top .pid{ font-family:var(--font-mono); font-size:12px; font-weight:600; }
+  .cp-row-top .xy{ font-family:var(--font-mono); font-size:10.5px; color:var(--ink-dim); }
+  .cp-latlon{ display:grid; grid-template-columns:1fr 1fr auto; gap:6px; align-items:center; }
+  .cp-latlon input{ padding:5px 7px; font-size:11.5px; }
+  .pick-btn{
+    background:var(--navy-700);
+    border:1px solid var(--line-cyan);
+    color:var(--copper-bright);
+    border-radius:5px;
+    width:30px; height:30px;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .pick-btn.active{ background:var(--copper); color:var(--navy-950); }
+
+  .status-line{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    padding:8px 10px;
+    border-radius:6px;
+    margin-top:10px;
+  }
+  .status-line.ok{ background:rgba(91,140,90,.12); color:var(--green); border:1px solid rgba(91,140,90,.4); }
+  .status-line.warn{ background:rgba(201,123,61,.1); color:var(--copper-bright); border:1px solid rgba(201,123,61,.35); }
+  .status-line.err{ background:rgba(192,86,74,.12); color:var(--red); border:1px solid rgba(192,86,74,.35); }
+  .dot{ width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0; }
+
+  /* point table */
+  #pointTable{ width:100%; border-collapse:collapse; font-family:var(--font-mono); font-size:11px; }
+  #pointTable th{
+    text-align:left; color:var(--ink-dim); font-weight:500;
+    text-transform:uppercase; letter-spacing:.05em; font-size:9.5px;
+    padding:4px 6px; border-bottom:1px solid var(--line-cyan-dim);
+    position:sticky; top:0; background:var(--navy-900);
+  }
+  #pointTable td{
+    padding:5px 6px; border-bottom:1px solid rgba(62,107,138,.15);
+    cursor:pointer;
+  }
+  #pointTable tr:hover td{ background:var(--navy-800); }
+  #pointTable tr.selected td{ background:rgba(201,123,61,.14); }
+  .table-wrap{ max-height:220px; overflow-y:auto; border:1px solid var(--line-cyan-dim); border-radius:6px; }
+  .table-wrap::-webkit-scrollbar{ width:6px; }
+  .table-wrap::-webkit-scrollbar-thumb{ background:var(--navy-700); }
+
+  .cp-tag{
+    display:inline-block; font-size:9px; font-family:var(--font-mono);
+    background:var(--copper); color:var(--navy-950); padding:1px 5px; border-radius:3px;
+    margin-left:6px; font-weight:600;
+  }
+
+  .empty-state{
+    text-align:center; color:var(--ink-dim); font-size:12px;
+    padding:20px 10px; font-family:var(--font-mono);
+  }
+
+  /* ---------- Map area ---------- */
+  #mapArea{ flex:1; position:relative; }
+  #map{ position:absolute; inset:0; background:#111; }
+
+  #topbar{
+    position:absolute; top:14px; left:14px; right:14px; z-index:1000;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    pointer-events:none;
+  }
+  #topbar > *{ pointer-events:auto; }
+
+  .glass-panel{
+    background:rgba(15,28,46,.88);
+    backdrop-filter:blur(6px);
+    border:1px solid var(--line-cyan-dim);
+    border-radius:8px;
+    color:var(--ink);
+  }
+
+  #layerToggle{ display:flex; padding:3px; gap:3px; }
+  #layerToggle button{
+    font-family:var(--font-mono); font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+    background:transparent; border:none; color:var(--ink-dim); padding:7px 14px; border-radius:5px; cursor:pointer;
+  }
+  #layerToggle button.active{ background:var(--copper); color:var(--navy-950); font-weight:600; }
+
+  #pickBanner{
+    position:absolute; top:14px; left:50%; transform:translateX(-50%);
+    z-index:1001; padding:9px 18px; font-family:var(--font-mono); font-size:12px;
+    background:var(--copper); color:var(--navy-950); border-radius:20px; font-weight:600;
+    display:none; align-items:center; gap:8px;
+    box-shadow:0 4px 14px rgba(0,0,0,.35);
+  }
+  #pickBanner.show{ display:flex; }
+
+  #ptCount{
+    padding:8px 14px; font-family:var(--font-mono); font-size:11.5px; color:var(--ink-dim);
+  }
+  #ptCount b{ color:var(--copper-bright); }
+
+  /* survey-nail marker */
+  .survey-marker{ position:relative; width:22px; height:22px; }
+  .survey-marker svg{ display:block; }
+  .survey-marker.cp-marker circle.ring{ stroke:var(--copper-bright); }
+  .leaflet-popup-content-wrapper{
+    background:var(--navy-900); color:var(--ink); border:1px solid var(--line-cyan-dim); border-radius:6px;
+  }
+  .leaflet-popup-tip{ background:var(--navy-900); }
+  .popup-title{ font-weight:700; font-size:13px; margin-bottom:4px; }
+  .popup-row{ font-family:var(--font-mono); font-size:11px; color:var(--ink-dim); }
+  .popup-row b{ color:var(--ink); }
+
+  .leaflet-control-attribution{ background:rgba(15,28,46,.7) !important; color:var(--ink-dim) !important; font-size:9.5px !important; }
+  .leaflet-control-attribution a{ color:var(--ink-dim) !important; }
+
+  @media (max-width:760px){
+    #sidebar{ width:100vw; position:absolute; z-index:1002; height:100vh; }
+    #mapArea{ display:none; }
+  }
+
+  /* ---------- Connect file browser modal ---------- */
+  .modal-overlay{
+    position:fixed; inset:0; z-index:2000;
+    background:rgba(10,20,32,.72);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .modal-box{
+    width:min(760px, 92vw);
+    height:min(640px, 86vh);
+    background:var(--navy-900);
+    border:1px solid var(--line-cyan-dim);
+    border-radius:10px;
+    display:flex; flex-direction:column;
+    overflow:hidden;
+    box-shadow:0 20px 60px rgba(0,0,0,.5);
+  }
+  .modal-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px; font-weight:600; font-size:14px;
+    border-bottom:1px solid var(--line-cyan-dim);
+  }
+  #connectModalStatus{ margin:10px 16px; }
+  .explorer-frame{
+    flex:1; border:none; width:100%; background:#0d1826;
+  }
+  .modal-fallback{
+    padding:12px 16px 16px;
+    border-top:1px solid var(--line-cyan-dim);
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <div id="sidebar">
+    <div id="sidebar-inner">
+
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div>
+          <h1>Point Mapper</h1>
+          <p>CSV → geolocated site points</p>
+        </div>
+      </div>
+
+      <!-- 1. Upload -->
+      <div class="section" id="section-upload">
+        <p class="section-label"><span class="num">01</span> Import CSV</p>
+        <div id="drop">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#3e6b8a" stroke-width="1.6"><path d="M12 3v12m0-12l-4 4m4-4l4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <div class="t1">Drop CSV, or click to browse</div>
+          <div class="t2">expects columns for point ID, X, Y</div>
+        </div>
+        <input type="file" id="fileInput" accept=".csv,text/csv" />
+        <button class="btn full small" id="browseConnectBtn" style="margin-top:8px;" disabled>◎ Browse from Trimble Connect…</button>
+        <div id="fileChipHolder" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- 2. Column mapping -->
+      <div class="section" id="section-map" style="display:none;">
+        <p class="section-label"><span class="num">02</span> Map columns</p>
+        <div class="field">
+          <label>Point ID / name</label>
+          <select id="colId"></select>
+        </div>
+        <div class="col-grid">
+          <div class="field">
+            <label>X (easting)</label>
+            <select id="colX"></select>
+          </div>
+          <div class="field">
+            <label>Y (northing)</label>
+            <select id="colY"></select>
+          </div>
+        </div>
+        <div class="col-grid">
+          <div class="field">
+            <label>Z (elevation, optional)</label>
+            <select id="colZ"></select>
+          </div>
+          <div class="field">
+            <label>Description (optional)</label>
+            <select id="colDesc"></select>
+          </div>
+        </div>
+        <div class="hint"><b><span id="rowCount">0</span> points</b> parsed from file.</div>
+      </div>
+
+      <!-- 3. Coordinate system -->
+      <div class="section" id="section-crs" style="display:none;">
+        <p class="section-label"><span class="num">03</span> Coordinate system</p>
+
+        <div id="tcConnectionInfo" class="status-line warn" style="margin-top:0;">
+          <span class="dot"></span><span>Standalone mode — not running inside Trimble Connect.</span>
+        </div>
+
+        <div class="col-grid" style="margin-top:12px;">
+          <button class="btn small" id="modeEpsgBtn" data-mode="epsg">EPSG code</button>
+          <button class="btn small" id="modeCpBtn" data-mode="controlPoints">Control points</button>
+        </div>
+
+        <!-- EPSG mode -->
+        <div id="epsgPanel" style="margin-top:12px;">
+          <p class="hint" id="epsgHint">Enter the EPSG code your CSV's X/Y values are projected in. If this extension is installed inside a Trimble Connect project with a Coordinate Reference System set, it's read automatically below.</p>
+          <div class="field" style="margin-top:8px;">
+            <label>Project CRS (from Trimble Connect)</label>
+            <input type="text" id="projectCrsName" value="—" disabled>
+          </div>
+          <div class="col-grid">
+            <div class="field">
+              <label>EPSG code</label>
+              <input type="text" id="epsgInput" placeholder="e.g. 2227">
+            </div>
+            <div class="field" style="display:flex; align-items:flex-end;">
+              <button class="btn primary full small" id="applyEpsgBtn">Apply</button>
+            </div>
+          </div>
+          <div id="epsgStatus"></div>
+        </div>
+
+        <!-- Control point mode -->
+        <div id="cpPanel" style="display:none; margin-top:12px;">
+          <p class="hint" style="margin-bottom:10px;">No known projection? Tie at least <b>2 points</b> to known lat/long positions so the set can be placed on the map — pick them on the satellite view, or type coordinates directly.</p>
+
+          <div id="cpEmpty" class="empty-state">No control points yet. Add one below.</div>
+          <div id="cpList"></div>
+
+          <div style="margin-top:10px;">
+            <select id="cpPointSelect" style="margin-bottom:8px;"></select>
+            <button class="btn full small" id="addCpBtn">+ Add control point</button>
+          </div>
+
+          <button class="btn primary full" id="computeBtn" style="margin-top:12px;" disabled>Compute georeference</button>
+          <div id="georefStatus"></div>
+        </div>
+      </div>
+
+      <!-- 4. Points list -->
+      <div class="section" id="section-points" style="display:none;">
+        <p class="section-label"><span class="num">04</span> Points <span style="color:var(--ink-dim); font-weight:400;">(<span id="plottedCount">0</span> plotted)</span></p>
+        <div class="table-wrap">
+          <table id="pointTable">
+            <thead><tr><th>ID</th><th>X</th><th>Y</th><th>Z</th></tr></thead>
+            <tbody id="pointTableBody"></tbody>
+          </table>
+        </div>
+        <button class="btn full small" id="clearAllBtn" style="margin-top:10px;">Reset / load new CSV</button>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="mapArea">
+    <div id="map"></div>
+    <div id="pickBanner">◎ Click the map to set this point's location</div>
+    <div id="topbar">
+      <div class="glass-panel" id="ptCount">no points plotted</div>
+      <div class="glass-panel" id="layerToggle">
+        <button data-layer="street" class="active">Streets</button>
+        <button data-layer="sat">Satellite</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="connectModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>Select a CSV from this project</span>
+        <button id="connectModalClose" class="pick-btn" title="Close">✕</button>
+      </div>
+      <div id="connectModalStatus" class="status-line warn"><span class="dot"></span><span>Connecting to Trimble Connect…</span></div>
+      <iframe id="explorerIframe" class="explorer-frame"></iframe>
+      <div class="modal-fallback">
+        <p class="hint">If clicking a file above doesn't pick it up, paste its file ID instead (visible in the file's details panel in Connect):</p>
+        <div class="col-grid">
+          <input type="text" id="manualFileId" placeholder="file id">
+          <button class="btn small" id="loadByIdBtn">Load by ID</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+
+  // ---------------- State ----------------
+  let rawRows = [];        // parsed CSV rows (objects keyed by header)
+  let headers = [];
+  let mapping = { id:null, x:null, y:null, z:null, desc:null };
+  let controlPoints = [];  // { rowIndex, id, x, y, lat, lon }
+  let transform = null;    // {a,b,tx,ty, refLat, refLon, rms}  (control-point similarity transform)
+  let pickingForCp = null; // index into controlPoints currently being placed via map click
+  let plottedMarkers = [];
+  let plottedLayer = null;
+  let cpMarkerLayer = null;
+
+  let placementMode = 'epsg';   // 'epsg' | 'controlPoints'
+  let epsgCode = null;
+  let epsgReady = false;
+  let tcProject = null;         // project info read from Trimble Connect, if embedded
+
+  // ---------------- Map setup ----------------
+  const map = L.map('map', { zoomControl:true, attributionControl:true }).setView([20,0], 2);
+
+  const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution:'&copy; OpenStreetMap contributors', maxZoom:20
+  });
+  const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution:'Tiles &copy; Esri', maxZoom:20
+  });
+  streetLayer.addTo(map);
+  let currentLayer = 'street';
+
+  document.querySelectorAll('#layerToggle button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const layer = btn.dataset.layer;
+      if(layer === currentLayer) return;
+      document.querySelectorAll('#layerToggle button').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      if(layer === 'sat'){ map.removeLayer(streetLayer); satLayer.addTo(map); }
+      else { map.removeLayer(satLayer); streetLayer.addTo(map); }
+      currentLayer = layer;
+    });
+  });
+
+  map.on('click', (e)=>{
+    if(pickingForCp === null) return;
+    const cp = controlPoints[pickingForCp];
+    cp.lat = +e.latlng.lat.toFixed(7);
+    cp.lon = +e.latlng.lng.toFixed(7);
+    pickingForCp = null;
+    document.getElementById('pickBanner').classList.remove('show');
+    renderControlPoints();
+  });
+
+  function surveyIcon(color, filled){
+    const html = `<div class="survey-marker"><svg width="22" height="22" viewBox="0 0 22 22">
+      <circle class="ring" cx="11" cy="11" r="7" fill="${filled?color:'none'}" fill-opacity="0.18" stroke="${color}" stroke-width="2"/>
+      <line x1="11" y1="2" x2="11" y2="7" stroke="${color}" stroke-width="2"/>
+      <line x1="11" y1="15" x2="11" y2="20" stroke="${color}" stroke-width="2"/>
+      <line x1="2" y1="11" x2="7" y2="11" stroke="${color}" stroke-width="2"/>
+      <line x1="15" y1="11" x2="20" y2="11" stroke="${color}" stroke-width="2"/>
+      <circle cx="11" cy="11" r="2" fill="${color}"/>
+    </svg></div>`;
+    return L.divIcon({ html, className:'', iconSize:[22,22], iconAnchor:[11,11], popupAnchor:[0,-10] });
+  }
+
+  // ---------------- File handling ----------------
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('fileInput');
+  drop.addEventListener('click', ()=> fileInput.click());
+  ['dragenter','dragover'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.remove('drag'); }));
+  drop.addEventListener('drop', e=>{
+    const f = e.dataTransfer.files[0];
+    if(f) handleFile(f);
+  });
+  fileInput.addEventListener('change', e=>{
+    const f = e.target.files[0];
+    if(f) handleFile(f);
+  });
+
+  function handleFile(file){
+    Papa.parse(file, {
+      header:true,
+      skipEmptyLines:true,
+      dynamicTyping:false,
+      complete: (results)=> ingestParsedCsv(results, file.name),
+      error: (err)=>{
+        alert('Could not parse that CSV: ' + err.message);
+      }
+    });
+  }
+
+  function ingestCsvText(text, name){
+    const results = Papa.parse(text, { header:true, skipEmptyLines:true, dynamicTyping:false });
+    if(results.errors && results.errors.length){
+      alert('Could not parse that CSV: ' + results.errors[0].message);
+      return;
+    }
+    ingestParsedCsv(results, name);
+  }
+
+  function ingestParsedCsv(results, name){
+    headers = results.meta.fields || [];
+    rawRows = results.data;
+    showFileChip(name, rawRows.length);
+    setupColumnMapping();
+    resetGeoref();
+  }
+
+  function showFileChip(name, count){
+    document.getElementById('fileChipHolder').innerHTML = `
+      <div class="file-chip">
+        <span>📄 ${escapeHtml(name)} — ${count} rows</span>
+        <button id="chipRemove" title="Remove">✕</button>
+      </div>`;
+    document.getElementById('chipRemove').addEventListener('click', fullReset);
+  }
+
+
+  // ---------------- Column mapping ----------------
+  function setupColumnMapping(){
+    document.getElementById('section-map').style.display = 'block';
+    document.getElementById('rowCount').textContent = rawRows.length;
+
+    const guesses = guessColumns(headers);
+    mapping = guesses;
+
+    fillSelect('colId', headers, guesses.id, true);
+    fillSelect('colX', headers, guesses.x, false);
+    fillSelect('colY', headers, guesses.y, false);
+    fillSelect('colZ', headers, guesses.z, true);
+    fillSelect('colDesc', headers, guesses.desc, true);
+
+    ['colId','colX','colY','colZ','colDesc'].forEach(elId=>{
+      document.getElementById(elId).addEventListener('change', onMappingChange);
+    });
+
+    onMappingChange();
+  }
+
+  function guessColumns(hdrs){
+    const norm = h => h.toLowerCase().replace(/[^a-z0-9]/g,'');
+    const find = (cands) => hdrs.find(h => cands.includes(norm(h))) || null;
+    return {
+      id:   find(['id','pointid','ptid','name','pointname','point','label']),
+      x:    find(['x','easting','east','pointx','xcoord','coordx']),
+      y:    find(['y','northing','north','pointy','ycoord','coordy']),
+      z:    find(['z','elevation','elev','height','pointz','zcoord','coordz','altitude']),
+      desc: find(['desc','description','code','notes','remark','remarks','type'])
+    };
+  }
+
+  function fillSelect(elId, hdrs, selected, allowNone){
+    const sel = document.getElementById(elId);
+    sel.innerHTML = '';
+    if(allowNone){
+      const o = document.createElement('option');
+      o.value=''; o.textContent='— none —';
+      sel.appendChild(o);
+    }
+    hdrs.forEach(h=>{
+      const o = document.createElement('option');
+      o.value = h; o.textContent = h;
+      if(h === selected) o.selected = true;
+      sel.appendChild(o);
+    });
+    if(!allowNone && !selected && hdrs.length) sel.selectedIndex = 0;
+  }
+
+  function onMappingChange(){
+    mapping.id = document.getElementById('colId').value || null;
+    mapping.x = document.getElementById('colX').value || null;
+    mapping.y = document.getElementById('colY').value || null;
+    mapping.z = document.getElementById('colZ').value || null;
+    mapping.desc = document.getElementById('colDesc').value || null;
+
+    if(mapping.x && mapping.y){
+      document.getElementById('section-crs').style.display = 'block';
+      document.getElementById('section-points').style.display = 'block';
+      populateCpPicker();
+      renderPointTable();
+    }
+  }
+
+  function getPoints(){
+    return rawRows.map((row, i)=>{
+      const x = parseFloat(row[mapping.x]);
+      const y = parseFloat(row[mapping.y]);
+      const z = mapping.z ? parseFloat(row[mapping.z]) : NaN;
+      return {
+        rowIndex:i,
+        id: mapping.id ? (row[mapping.id] ?? ('#'+(i+1))) : ('#'+(i+1)),
+        desc: mapping.desc ? (row[mapping.desc] ?? '') : '',
+        x, y, z: isNaN(z) ? null : z,
+        valid: !isNaN(x) && !isNaN(y)
+      };
+    });
+  }
+
+  // ---------------- Control points ----------------
+  function populateCpPicker(){
+    const points = getPoints();
+    const sel = document.getElementById('cpPointSelect');
+    sel.innerHTML = '';
+    points.forEach(p=>{
+      if(!p.valid) return;
+      if(controlPoints.some(cp=>cp.rowIndex===p.rowIndex)) return;
+      const o = document.createElement('option');
+      o.value = p.rowIndex;
+      o.textContent = `${p.id}  (x:${p.x}, y:${p.y})`;
+      sel.appendChild(o);
+    });
+  }
+
+  document.getElementById('addCpBtn').addEventListener('click', ()=>{
+    const sel = document.getElementById('cpPointSelect');
+    if(!sel.value) return;
+    const points = getPoints();
+    const p = points.find(pt=>pt.rowIndex === +sel.value);
+    if(!p) return;
+    controlPoints.push({ rowIndex:p.rowIndex, id:p.id, x:p.x, y:p.y, lat:null, lon:null });
+    populateCpPicker();
+    renderControlPoints();
+  });
+
+  function renderControlPoints(){
+    const list = document.getElementById('cpList');
+    const empty = document.getElementById('cpEmpty');
+    empty.style.display = controlPoints.length ? 'none' : 'block';
+    list.innerHTML = '';
+
+    updateCpMarkers();
+
+    controlPoints.forEach((cp, idx)=>{
+      const row = document.createElement('div');
+      row.className = 'cp-row' + (pickingForCp===idx ? ' armed' : '');
+      row.innerHTML = `
+        <div class="cp-row-top">
+          <span class="pid">${escapeHtml(String(cp.id))}</span>
+          <span class="xy">x:${cp.x} y:${cp.y}</span>
+        </div>
+        <div class="cp-latlon">
+          <input type="number" step="any" placeholder="lat" value="${cp.lat ?? ''}" data-field="lat" data-idx="${idx}">
+          <input type="number" step="any" placeholder="lon" value="${cp.lon ?? ''}" data-field="lon" data-idx="${idx}">
+          <button class="pick-btn ${pickingForCp===idx?'active':''}" data-idx="${idx}" title="Pick on map">◎</button>
+        </div>
+      `;
+      list.appendChild(row);
+    });
+
+    list.querySelectorAll('input[data-field]').forEach(inp=>{
+      inp.addEventListener('input', e=>{
+        const idx = +e.target.dataset.idx;
+        const field = e.target.dataset.field;
+        const val = parseFloat(e.target.value);
+        controlPoints[idx][field] = isNaN(val) ? null : val;
+        updateComputeButtonState();
+        updateCpMarkers(); // redraw markers only, keep focus in the input
+      });
+    });
+    list.querySelectorAll('.pick-btn').forEach(btn=>{
+      btn.addEventListener('click', e=>{
+        const idx = +e.currentTarget.dataset.idx;
+        if(pickingForCp === idx){
+          pickingForCp = null;
+          document.getElementById('pickBanner').classList.remove('show');
+        } else {
+          pickingForCp = idx;
+          document.getElementById('pickBanner').classList.add('show');
+        }
+        renderControlPoints();
+      });
+    });
+
+    updateComputeButtonState();
+  }
+
+  function updateCpMarkers(){
+    if(cpMarkerLayer) map.removeLayer(cpMarkerLayer);
+    cpMarkerLayer = L.layerGroup().addTo(map);
+    controlPoints.forEach(cp=>{
+      if(cp.lat!=null && cp.lon!=null){
+        L.marker([cp.lat, cp.lon], {icon:surveyIcon('#c97b3d', true)})
+          .bindPopup(`<div class="popup-title">${escapeHtml(String(cp.id))}</div><div class="popup-row">control point</div>`)
+          .addTo(cpMarkerLayer);
+      }
+    });
+  }
+
+  function updateComputeButtonState(){
+    const ready = controlPoints.filter(cp=>cp.lat!=null && cp.lon!=null).length;
+    document.getElementById('computeBtn').disabled = ready < 2;
+  }
+
+  function resetGeoref(){
+    controlPoints = [];
+    transform = null;
+    pickingForCp = null;
+    epsgReady = false;
+    epsgCode = null;
+    document.getElementById('epsgInput').value = '';
+    document.getElementById('epsgStatus').innerHTML = '';
+    document.getElementById('pickBanner').classList.remove('show');
+    document.getElementById('georefStatus').innerHTML = '';
+    if(cpMarkerLayer){ map.removeLayer(cpMarkerLayer); cpMarkerLayer=null; }
+    if(plottedLayer){ map.removeLayer(plottedLayer); plottedLayer=null; }
+    document.getElementById('ptCount').textContent = 'no points plotted';
+    document.getElementById('plottedCount').textContent = '0';
+    if(tcProject) applyProjectCrsInfo(tcProject); // re-apply any known project CRS
+  }
+
+  // ---------------- Placement mode toggle ----------------
+  function setMode(mode){
+    placementMode = mode;
+    document.getElementById('modeEpsgBtn').classList.toggle('mode-active', mode==='epsg');
+    document.getElementById('modeCpBtn').classList.toggle('mode-active', mode==='controlPoints');
+    document.getElementById('epsgPanel').style.display = mode==='epsg' ? 'block' : 'none';
+    document.getElementById('cpPanel').style.display = mode==='controlPoints' ? 'block' : 'none';
+    if(mode==='epsg' && epsgReady) plotAllPoints();
+    if(mode==='controlPoints' && transform) plotAllPoints();
+  }
+  document.getElementById('modeEpsgBtn').addEventListener('click', ()=>setMode('epsg'));
+  document.getElementById('modeCpBtn').addEventListener('click', ()=>setMode('controlPoints'));
+  setMode('epsg');
+
+  // ---------------- EPSG / project CRS ----------------
+  function setEpsgStatus(kind, msg){
+    document.getElementById('epsgStatus').innerHTML =
+      `<div class="status-line ${kind}"><span class="dot"></span>${escapeHtml(msg)}</div>`;
+  }
+
+  async function applyEpsg(code){
+    code = String(code).trim().replace(/^EPSG:/i,'');
+    if(!/^\d{4,6}$/.test(code)){
+      setEpsgStatus('err', 'Enter a numeric EPSG code, e.g. 2227 or 27700.');
+      return;
+    }
+    epsgReady = false;
+    setEpsgStatus('warn', `Looking up EPSG:${code}…`);
+    try{
+      const defName = 'EPSG:'+code;
+      if(!proj4.defs(defName)){
+        const res = await fetch(`https://epsg.io/${code}.proj4`);
+        if(!res.ok) throw new Error('not found');
+        const projStr = (await res.text()).trim();
+        if(!projStr.startsWith('+proj')) throw new Error('not found');
+        proj4.defs(defName, projStr);
+      }
+      // sanity check on a real point, if we have one
+      const points = getPoints().filter(p=>p.valid);
+      if(points.length){
+        const [lon, lat] = proj4(defName, 'WGS84', [points[0].x, points[0].y]);
+        if(!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180){
+          throw new Error('out of range');
+        }
+      }
+      epsgCode = code;
+      epsgReady = true;
+      setEpsgStatus('ok', `Applied EPSG:${code}. Points are being transformed directly — no control points needed.`);
+      plotAllPoints();
+    }catch(e){
+      epsgReady = false;
+      setEpsgStatus('err', `Couldn't resolve EPSG:${code}. Double-check the code, or switch to control points.`);
+    }
+  }
+
+  document.getElementById('applyEpsgBtn').addEventListener('click', ()=>{
+    applyEpsg(document.getElementById('epsgInput').value);
+  });
+  document.getElementById('epsgInput').addEventListener('keydown', e=>{
+    if(e.key === 'Enter') applyEpsg(e.target.value);
+  });
+
+  function applyProjectCrsInfo(project){
+    tcProject = project;
+    const nameField = document.getElementById('projectCrsName');
+    const info = document.getElementById('tcConnectionInfo');
+    const projName = project && project.name ? project.name : 'this project';
+
+    if(project && project.crs && project.crs.name){
+      nameField.value = project.crs.name;
+      info.className = 'status-line ok';
+      info.innerHTML = `<span class="dot"></span><span>Connected to <b>${escapeHtml(projName)}</b> — reading its Coordinate Reference System.</span>`;
+
+      const m = project.crs.name.match(/(?:EPSG[:\s]*)(\d{4,6})/i);
+      if(m){
+        document.getElementById('epsgInput').value = m[1];
+        applyEpsg(m[1]);
+      } else {
+        document.getElementById('epsgHint').innerHTML =
+          `Project CRS is set to <b>${escapeHtml(project.crs.name)}</b>, but its EPSG code couldn't be read automatically — look it up on <a href="https://epsg.io" target="_blank" style="color:var(--copper-bright);">epsg.io</a> and enter it below.`;
+      }
+    } else if(project){
+      nameField.value = 'No CRS set on this project';
+      info.className = 'status-line warn';
+      info.innerHTML = `<span class="dot"></span><span>Connected to <b>${escapeHtml(projName)}</b> — no Coordinate Reference System is set (Project Settings → Project Details). Enter an EPSG code manually, or use control points.</span>`;
+    }
+  }
+
+
+  // local (x,y) -> target meters (E,N) via: E = a*x - b*y + tx ; N = b*x + a*y + ty
+  // Solved by least squares over control points.
+  function solveTransform(pairs){
+    // pairs: [{x,y,E,N}, ...]
+    // Build normal equations for [a,b,tx,ty]
+    let Sxx=0,Syy=0,Sx=0,Sy=0,S1=0,SxE=0,SyE=0,SE=0,SxN=0,SyN=0,SN=0;
+    pairs.forEach(p=>{
+      Sxx += p.x*p.x; Syy += p.y*p.y;
+      Sx += p.x; Sy += p.y; S1 += 1;
+      SxE += p.x*p.E; SyE += p.y*p.E; SE += p.E;
+      SxN += p.x*p.N; SyN += p.y*p.N; SN += p.N;
+    });
+    // From derivation, the 4x4 system decouples nicely into two 2x2s when combining
+    // E and N equations (classic Helmert least squares closed form):
+    const denom = Sxx + Syy; // approx normal form when x,y centered... use general LSQ instead for robustness
+    // General least squares via normal equations on stacked system (safe for N>=2):
+    // Unknowns u = [a,b,tx,ty]
+    // Row per point for E: [x, -y, 1, 0] . u = E
+    // Row per point for N: [y,  x, 0, 1] . u = N
+    let ATA = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+    let ATL = [0,0,0,0];
+    pairs.forEach(p=>{
+      const rowsA = [
+        [p.x, -p.y, 1, 0, p.E],
+        [p.y,  p.x, 0, 1, p.N]
+      ];
+      rowsA.forEach(r=>{
+        const a4 = r.slice(0,4), l = r[4];
+        for(let i=0;i<4;i++){
+          ATL[i] += a4[i]*l;
+          for(let j=0;j<4;j++){
+            ATA[i][j] += a4[i]*a4[j];
+          }
+        }
+      });
+    });
+    const u = solveLinearSystem(ATA, ATL);
+    if(!u) return null;
+    const [a,b,tx,ty] = u;
+
+    // RMS residual in meters
+    let sq=0;
+    pairs.forEach(p=>{
+      const Ep = a*p.x - b*p.y + tx;
+      const Np = b*p.x + a*p.y + ty;
+      sq += (Ep-p.E)**2 + (Np-p.N)**2;
+    });
+    const rms = Math.sqrt(sq / pairs.length);
+    return { a,b,tx,ty, rms };
+  }
+
+  function solveLinearSystem(A, L){
+    // Gaussian elimination with partial pivoting, A is 4x4, L is length 4
+    const n = A.length;
+    const M = A.map((row,i)=> row.concat([L[i]]));
+    for(let col=0; col<n; col++){
+      let pivot = col;
+      for(let r=col+1; r<n; r++) if(Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+      if(Math.abs(M[pivot][col]) < 1e-12) return null;
+      [M[col], M[pivot]] = [M[pivot], M[col]];
+      for(let r=0; r<n; r++){
+        if(r===col) continue;
+        const f = M[r][col]/M[col][col];
+        for(let c=col; c<=n; c++) M[r][c] -= f*M[col][c];
+      }
+    }
+    return M.map((row,i)=> row[n]/row[i]);
+  }
+
+  function computeGeoreference(){
+    const usable = controlPoints.filter(cp=>cp.lat!=null && cp.lon!=null);
+    if(usable.length < 2) return;
+
+    const refLat = usable.reduce((s,c)=>s+c.lat,0)/usable.length;
+    const refLon = usable.reduce((s,c)=>s+c.lon,0)/usable.length;
+    const mPerDegLat = 111320;
+    const mPerDegLon = 111320 * Math.cos(refLat*Math.PI/180);
+
+    const pairs = usable.map(cp=>({
+      x:cp.x, y:cp.y,
+      E:(cp.lon-refLon)*mPerDegLon,
+      N:(cp.lat-refLat)*mPerDegLat
+    }));
+
+    const solved = solveTransform(pairs);
+    if(!solved){
+      setGeorefStatus('err', 'Could not solve transform — control points may be collinear or identical. Try different points.');
+      return;
+    }
+
+    transform = { ...solved, refLat, refLon, mPerDegLat, mPerDegLon };
+
+    const rmsMsg = solved.rms < 0.5
+      ? `Solved — residual ${solved.rms.toFixed(2)} m (tight fit).`
+      : `Solved — residual ${solved.rms.toFixed(2)} m across ${usable.length} control points.`;
+    setGeorefStatus(solved.rms < 5 ? 'ok' : 'warn', rmsMsg);
+
+    plotAllPoints();
+  }
+
+  function setGeorefStatus(kind, msg){
+    document.getElementById('georefStatus').innerHTML =
+      `<div class="status-line ${kind}"><span class="dot"></span>${escapeHtml(msg)}</div>`;
+  }
+
+  function localToLatLon(x,y){
+    if(placementMode === 'epsg' && epsgReady){
+      const [lon, lat] = proj4('EPSG:'+epsgCode, 'WGS84', [x,y]);
+      return { lat, lon };
+    }
+    if(placementMode === 'controlPoints' && transform){
+      const E = transform.a*x - transform.b*y + transform.tx;
+      const N = transform.b*x + transform.a*y + transform.ty;
+      return {
+        lat: transform.refLat + N/transform.mPerDegLat,
+        lon: transform.refLon + E/transform.mPerDegLon
+      };
+    }
+    return null;
+  }
+
+  document.getElementById('computeBtn').addEventListener('click', computeGeoreference);
+
+  // ---------------- Plot points ----------------
+  function plotAllPoints(){
+    const ready = (placementMode === 'epsg' && epsgReady) || (placementMode === 'controlPoints' && transform);
+    if(!ready) return;
+    const points = getPoints().filter(p=>p.valid);
+
+    if(plottedLayer) map.removeLayer(plottedLayer);
+    plottedLayer = L.layerGroup().addTo(map);
+    plottedMarkers = [];
+
+    const bounds = [];
+    points.forEach(p=>{
+      const ll = localToLatLon(p.x, p.y);
+      if(!ll) return;
+      const {lat, lon} = ll;
+      const isCp = controlPoints.some(cp=>cp.rowIndex===p.rowIndex);
+      const marker = L.marker([lat,lon], {icon: surveyIcon(isCp ? '#c97b3d' : '#5b8c5a', false)})
+        .bindPopup(
+          `<div class="popup-title">${escapeHtml(String(p.id))}</div>` +
+          (p.desc ? `<div class="popup-row">${escapeHtml(String(p.desc))}</div>` : '') +
+          `<div class="popup-row">x: <b>${p.x}</b> &nbsp; y: <b>${p.y}</b>${p.z!=null ? ` &nbsp; z: <b>${p.z}</b>` : ''}</div>` +
+          `<div class="popup-row">lat: <b>${lat.toFixed(6)}</b> &nbsp; lon: <b>${lon.toFixed(6)}</b></div>`
+        );
+      marker.addTo(plottedLayer);
+      marker._rowIndex = p.rowIndex;
+      plottedMarkers.push(marker);
+      bounds.push([lat,lon]);
+    });
+
+    if(bounds.length) map.fitBounds(bounds, {padding:[60,60], maxZoom:19});
+
+    document.getElementById('ptCount').innerHTML = `<b>${bounds.length}</b> points plotted`;
+    document.getElementById('plottedCount').textContent = bounds.length;
+    renderPointTable();
+  }
+
+  // ---------------- Points table ----------------
+  function renderPointTable(){
+    const points = getPoints();
+    const tbody = document.getElementById('pointTableBody');
+    tbody.innerHTML = '';
+    points.forEach(p=>{
+      const tr = document.createElement('tr');
+      const isCp = controlPoints.some(cp=>cp.rowIndex===p.rowIndex);
+      tr.innerHTML = `<td>${escapeHtml(String(p.id))}${isCp?'<span class="cp-tag">CP</span>':''}</td><td>${p.x}</td><td>${p.y}</td><td>${p.z!=null ? p.z : '—'}</td>`;
+      tr.addEventListener('click', ()=>{
+        document.querySelectorAll('#pointTable tr').forEach(r=>r.classList.remove('selected'));
+        tr.classList.add('selected');
+        const marker = plottedMarkers.find(m=>m._rowIndex===p.rowIndex);
+        if(marker){
+          map.setView(marker.getLatLng(), Math.max(map.getZoom(), 17));
+          marker.openPopup();
+        }
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('clearAllBtn').addEventListener('click', fullReset);
+
+  function fullReset(){
+    rawRows = []; headers = []; mapping = {id:null,x:null,y:null,z:null,desc:null};
+    document.getElementById('fileChipHolder').innerHTML = '';
+    document.getElementById('section-map').style.display = 'none';
+    document.getElementById('section-crs').style.display = 'none';
+    document.getElementById('section-points').style.display = 'none';
+    fileInput.value = '';
+    resetGeoref();
+  }
+
+  function escapeHtml(str){
+    return str.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---------------- Trimble Connect extension bootstrap ----------------
+  // If this page is embedded inside Trimble Connect (as a Project extension),
+  // connect to the Workspace API, read the project's Coordinate Reference
+  // System (Project Settings > Project Details) to auto-place points, and
+  // request an access token so the "Browse from Connect" button can open
+  // the project's own file explorer to pick a CSV. The app is fully usable
+  // standalone too — this block simply no-ops outside of Connect.
+  let tcOuterApi = null;
+  let tcAccessToken = null;
+
+  (function connectToTrimble(){
+    if(window.parent === window) return; // not embedded, skip
+    var s = document.createElement('script');
+    s.src = 'https://components.connect.trimble.com/trimble-connect-workspace-api/index.js';
+    s.onload = function(){
+      try{
+        TrimbleConnectWorkspace.connect(window.parent, function(event, data){
+          if(event === 'extension.accessToken' && data && data.accessToken){
+            tcAccessToken = data.accessToken;
+          }
+          if(event === 'extension.userSettingsChanged'){
+            tcOuterApi && tcOuterApi.project.getProject().then(applyProjectCrsInfo);
+          }
+        }).then(function(api){
+          window.__tcApi = api;
+          tcOuterApi = api;
+          document.getElementById('browseConnectBtn').disabled = false;
+          // Ask for an access token up front so Browse from Connect is instant later.
+          // The user may see a one-time consent prompt inside Connect; the token
+          // itself arrives via the extension.accessToken event above.
+          api.extension.getPermission('accesstoken').then(function(res){
+            if(typeof res === 'string' && res.length > 20) tcAccessToken = res;
+          }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
+          return api.project.getProject();
+        }).then(function(project){
+          if(project) applyProjectCrsInfo(project);
+        }).catch(function(){
+          // Not actually running inside Connect, or getProject isn't permitted — stays in standalone mode.
+        });
+      }catch(e){ /* Workspace API not available */ }
+    };
+    document.head.appendChild(s);
+  })();
+
+  // ---------------- Browse from Connect (embedded File Explorer) ----------------
+  // Opens Trimble Connect's own file explorer inside this extension, using the
+  // documented embed.initFileExplorer pattern, so the user can pick a CSV that's
+  // already stored in the project instead of uploading one from their computer.
+  const modal = document.getElementById('connectModal');
+  const explorerFrame = document.getElementById('explorerIframe');
+  let explorerApi = null;
+
+  function setModalStatus(kind, msg){
+    const el = document.getElementById('connectModalStatus');
+    el.className = 'status-line ' + kind;
+    el.innerHTML = `<span class="dot"></span><span>${escapeHtml(msg)}</span>`;
+  }
+
+  document.getElementById('browseConnectBtn').addEventListener('click', openConnectBrowser);
+  document.getElementById('connectModalClose').addEventListener('click', closeConnectBrowser);
+  modal.addEventListener('click', e=>{ if(e.target === modal) closeConnectBrowser(); });
+
+  async function openConnectBrowser(){
+    if(!tcOuterApi){
+      alert('Not connected to Trimble Connect — this only works when the extension is running inside a project.');
+      return;
+    }
+    modal.style.display = 'flex';
+    setModalStatus('warn', 'Connecting to Trimble Connect…');
+
+    try{
+      if(!tcAccessToken){
+        tcAccessToken = await tcOuterApi.extension.getPermission('accesstoken');
+      }
+      const project = await tcOuterApi.project.getProject();
+
+      explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
+      explorerApi = await TrimbleConnectWorkspace.connect(explorerFrame, onExplorerEvent, 30000);
+      await explorerApi.embed.setTokens({ accessToken: tcAccessToken });
+      await explorerApi.embed.initFileExplorer({ projectId: project.id });
+      setModalStatus('ok', 'Click a CSV file to load it. (If nothing happens on click, use the manual field below.)');
+    }catch(e){
+      setModalStatus('err', "Couldn't open the Connect file browser — use the manual file ID field below instead.");
+    }
+  }
+
+  function closeConnectBrowser(){
+    modal.style.display = 'none';
+    explorerFrame.src = 'about:blank';
+    explorerApi = null;
+  }
+
+  // The embedded explorer's exact "file selected" event isn't part of the
+  // publicly published Workspace API reference, so this listens broadly and
+  // pattern-matches any event payload that looks like a chosen CSV file
+  // (an object with an id + a .csv name). If your Connect version emits a
+  // differently-shaped event, the manual "Load by ID" field is the reliable
+  // fallback — the file's ID is visible in its details panel in Connect.
+  function onExplorerEvent(event, data){
+    const candidate = findCsvFileInPayload(data);
+    if(candidate) loadConnectFile(candidate.id, candidate.name);
+  }
+
+  function findCsvFileInPayload(data){
+    if(!data || typeof data !== 'object') return null;
+    const items = Array.isArray(data) ? data : (Array.isArray(data.data) ? data.data : [data]);
+    for(const item of items){
+      if(item && item.id && typeof item.name === 'string' && /\.csv$/i.test(item.name)){
+        return item;
+      }
+    }
+    return null;
+  }
+
+  document.getElementById('loadByIdBtn').addEventListener('click', ()=>{
+    const id = document.getElementById('manualFileId').value.trim();
+    if(id) loadConnectFile(id, id + '.csv');
+  });
+
+  async function loadConnectFile(fileId, name){
+    setModalStatus('warn', `Downloading ${name}…`);
+    try{
+      const res = await fetch(`https://app.connect.trimble.com/tc/api/2.0/files/${encodeURIComponent(fileId)}/data`, {
+        headers: { Authorization: `Bearer ${tcAccessToken}` }
+      });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      ingestCsvText(text, name);
+      closeConnectBrowser();
+    }catch(e){
+      setModalStatus('err', `Couldn't download that file (${e.message}). Double check the file ID, or that it's a CSV in this project.`);
+    }
+  }
+
+})();
+</script>
+</body>
+</html>
