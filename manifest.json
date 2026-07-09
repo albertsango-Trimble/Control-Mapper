@@ -1,8 +1,8 @@
 {
-  "url": "https://point-mapper-csv.netlify.app/index.html",
+  "url": "https://albertsango-trimble.github.io/Control-Mapper/index.html",
   "title": "Point Mapper",
   "description": "Upload a CSV of survey points and view them plotted on a street or satellite base map.",
-  "icon": "https://point-mapper-csv.netlify.app/images.png",
-  "infoUrl": "https://point-mapper-csv.netlify.app/README.md",
+  "icon": "https://albertsango-trimble.github.io/Control-Mapper/images.png",
+  "infoUrl": "https://albertsango-trimble.github.io/Control-Mapper/README.md",
   "enabled": true
 }
