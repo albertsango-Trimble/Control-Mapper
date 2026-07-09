@@ -10,6 +10,7 @@
 // ourselves via env.ASSETS and stamp CORS headers onto every response.
 
 const CANDIDATE_HOSTS = [
+  'https://app32.connect.trimble.com', // confirmed from a real thumbnailUrl in this project's file-selected event
   'https://app.connect.trimble.com',
   'https://app21.connect.trimble.com',
   'https://app31.connect.trimble.com'
@@ -48,6 +49,7 @@ export default {
 
 async function handleDownload(request, url) {
   const fileId = url.searchParams.get('fileId');
+  const versionId = url.searchParams.get('versionId');
   const auth = request.headers.get('Authorization');
 
   if (!fileId) {
@@ -64,8 +66,12 @@ async function handleDownload(request, url) {
     try {
       // Step 1: fetch file metadata. This is the well-established, standard
       // REST shape (GET /files/{id}) — far more likely to be correct than
-      // guessing a raw content-download path outright.
-      const metaRes = await fetch(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}`, {
+      // guessing a raw content-download path outright. Include versionId
+      // if we have one, since Trimble's own thumbnail URLs pass it too.
+      const metaUrl = new URL(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}`);
+      if (versionId) metaUrl.searchParams.set('versionId', versionId);
+
+      const metaRes = await fetch(metaUrl.toString(), {
         headers: { Authorization: auth }
       });
 
