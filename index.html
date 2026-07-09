@@ -616,6 +616,15 @@
 
   const baseLayers = { street: streetLayer, sat: satLayer, custom: null }; // custom filled in once configured
 
+  function removeCurrentLayers(){
+    if(currentLayer === 'custom'){
+      if(map.hasLayer(satLayer)) map.removeLayer(satLayer);
+      if(baseLayers.custom && map.hasLayer(baseLayers.custom)) map.removeLayer(baseLayers.custom);
+    } else if(baseLayers[currentLayer] && map.hasLayer(baseLayers[currentLayer])){
+      map.removeLayer(baseLayers[currentLayer]);
+    }
+  }
+
   function switchToLayer(layer){
     if(layer === 'custom' && !baseLayers.custom){
       // Not configured yet — open the config panel instead of switching.
@@ -624,8 +633,16 @@
     }
     if(layer === currentLayer) return;
     document.querySelectorAll('#layerToggle button[data-layer]').forEach(b=>b.classList.toggle('active', b.dataset.layer===layer));
-    if(baseLayers[currentLayer]) map.removeLayer(baseLayers[currentLayer]);
-    if(baseLayers[layer]) baseLayers[layer].addTo(map);
+    removeCurrentLayers();
+    if(layer === 'custom'){
+      // Satellite underneath as a real-imagery fallback for any
+      // transparent or missing tiles in the custom layer, so gaps show
+      // actual ground instead of the plain map background.
+      satLayer.addTo(map);
+      baseLayers.custom.addTo(map);
+    } else if(baseLayers[layer]){
+      baseLayers[layer].addTo(map);
+    }
     currentLayer = layer;
   }
 
@@ -783,7 +800,7 @@
       return;
     }
 
-    if(baseLayers.custom) map.removeLayer(baseLayers.custom);
+    if(baseLayers.custom && map.hasLayer(baseLayers.custom)) map.removeLayer(baseLayers.custom);
     customTileLayer = L.tileLayer(url, { attribution: attribution || '', maxZoom: 24 });
     baseLayers.custom = customTileLayer;
 
@@ -798,7 +815,15 @@
 
     setCustomLayerStatus('ok', 'Applied.');
     document.getElementById('customLayerToggleBtn').textContent = 'Custom ✓';
-    switchToLayer('custom');
+
+    if(currentLayer === 'custom'){
+      // Already showing Custom (picking a different layer from the same
+      // capabilities doc, or re-applying) — satellite's already underneath,
+      // just swap in the new tile layer on top.
+      customTileLayer.addTo(map);
+    } else {
+      switchToLayer('custom'); // adds satellite underneath + this layer on top
+    }
 
     // Center on the layer's real-world extent, straight from the
     // capabilities doc — no need to wait for any tiles to actually load.
