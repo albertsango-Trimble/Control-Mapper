@@ -1,8 +1,8 @@
 {
-  "url": "https://albertsango-trimble.github.io/Control-Mapper/index.html",
+  "url": "https://control-mapper.albert-sango.workers.dev/index.html",
   "title": "Point Mapper",
   "description": "Upload a CSV of survey points and view them plotted on a street or satellite base map.",
   "icon": "https://albertsango-trimble.github.io/Control-Mapper/images.png",
-  "infoUrl": "https://albertsango-trimble.github.io/Control-Mapper/README.md",
+  "infoUrl": "https://control-mapper.albert-sango.workers.dev/README.md",
   "enabled": true
 }
