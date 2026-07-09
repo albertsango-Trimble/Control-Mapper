@@ -62,6 +62,48 @@ async function resolveContent(bodyText, auth) {
   }
 }
 
+// Generic same-origin proxy for fetching a URL that lacks CORS headers —
+// currently used for WMTS GetCapabilities documents (an XML file most
+// providers, including Propeller Aero, don't serve with CORS headers,
+// since it's traditionally consumed server-side by GIS desktop software,
+// not fetched directly from a browser tab).
+async function handleProxyFetch(url) {
+  const target = url.searchParams.get('url');
+  if (!target) {
+    return new Response('Missing url', { status: 400, headers: CORS_HEADERS });
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return new Response('Invalid url', { status: 400, headers: CORS_HEADERS });
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return new Response('Only http/https URLs are allowed', { status: 400, headers: CORS_HEADERS });
+  }
+  // Basic guard against pointing this at internal/private infrastructure.
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host.startsWith('127.') || host.startsWith('169.254.') ||
+      host.startsWith('10.') || host.startsWith('192.168.') || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+    return new Response('That host is not allowed', { status: 400, headers: CORS_HEADERS });
+  }
+
+  try {
+    const res = await fetch(parsed.toString(), { headers: { Accept: 'application/xml, text/xml, */*' } });
+    const text = await res.text();
+    if (text.length > 3_000_000) {
+      return new Response('Response too large', { status: 502, headers: CORS_HEADERS });
+    }
+    return new Response(text, {
+      status: res.status,
+      headers: { ...CORS_HEADERS, 'Content-Type': res.headers.get('content-type') || 'text/plain' }
+    });
+  } catch (e) {
+    return new Response(`Fetch failed: ${e}`, { status: 502, headers: CORS_HEADERS });
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -72,6 +114,15 @@ export default {
       }
       if (request.method === 'GET') {
         return handleDownload(request, url);
+      }
+    }
+
+    if (url.pathname === '/api/proxy-fetch') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+      if (request.method === 'GET') {
+        return handleProxyFetch(url);
       }
     }
 
