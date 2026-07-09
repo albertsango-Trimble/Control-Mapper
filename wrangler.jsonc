@@ -1,9 +1,9 @@
 {
   "name": "control-mapper",
   "compatibility_date": "2026-07-01",
-  "main": "src/worker.js",
+  "main": "worker.js",
   "assets": {
-    "directory": "./public"
+    "directory": "./"
   },
   "workers_dev": true
 }
