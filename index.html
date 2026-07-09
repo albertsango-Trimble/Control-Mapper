@@ -415,6 +415,10 @@
       <!-- 2. Column mapping -->
       <div class="section" id="section-map" style="display:none;">
         <p class="section-label"><span class="num">02</span> Map columns</p>
+        <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12.5px; color:var(--ink-dim); cursor:pointer;">
+          <input type="checkbox" id="noHeaderToggle" style="width:auto;">
+          This file has no header row (first row is already data)
+        </label>
         <div class="field">
           <label>Point ID / name</label>
           <select id="colId"></select>
@@ -618,28 +622,73 @@
     if(f) handleFile(f);
   });
 
+  let rawCsvText = ''; // kept so the "no header row" toggle can re-parse without re-fetching
+  let noHeaderOverride = null; // null = auto-detect, true/false = user override
+
   function handleFile(file){
-    Papa.parse(file, {
-      header:true,
-      skipEmptyLines:true,
-      dynamicTyping:false,
-      complete: (results)=> ingestParsedCsv(results, file.name),
-      error: (err)=>{
-        alert('Could not parse that CSV: ' + err.message);
-      }
+    file.text().then(text => processCsvText(text, file.name)).catch(err=>{
+      alert('Could not read that file: ' + err.message);
     });
   }
 
   function ingestCsvText(text, name){
-    const results = Papa.parse(text, { header:true, skipEmptyLines:true, dynamicTyping:false });
-    if(results.errors && results.errors.length){
-      alert('Could not parse that CSV: ' + results.errors[0].message);
-      return;
-    }
-    ingestParsedCsv(results, name);
+    processCsvText(text, name);
   }
 
+  function processCsvText(text, name){
+    rawCsvText = text;
+    const useNoHeader = noHeaderOverride !== null ? noHeaderOverride : detectNoHeader(text);
+    document.getElementById('noHeaderToggle').checked = useNoHeader;
+    parseWithHeaderSetting(text, name, useNoHeader);
+  }
+
+  // Heuristic: parse the first row and see if it looks like data (mostly
+  // numeric fields) rather than column names. This is exactly the shape a
+  // survey CSV with no header takes: "S0,292401.892,5862706.789,661.322,SM".
+  function detectNoHeader(text){
+    const firstLine = text.split(/\r\n|\r|\n/).find(l => l.trim().length > 0);
+    if(!firstLine) return false;
+    const fields = firstLine.split(',');
+    const numericCount = fields.filter(f => f.trim() !== '' && !isNaN(parseFloat(f)) && isFinite(f)).length;
+    // If at least 2 fields (or more than half) parse as plain numbers, this
+    // is very unlikely to be a header row of column names.
+    return numericCount >= 2 && numericCount >= fields.length / 2;
+  }
+
+  function parseWithHeaderSetting(text, name, noHeader){
+    if(noHeader){
+      const results = Papa.parse(text, { header:false, skipEmptyLines:true, dynamicTyping:false, delimiter:',' });
+      if(results.errors && results.errors.length){
+        alert('Could not parse that CSV: ' + results.errors[0].message);
+        return;
+      }
+      const width = results.data.reduce((max,row)=>Math.max(max,row.length), 0);
+      const synthHeaders = Array.from({length: width}, (_,i)=>`Column ${i+1}`);
+      const rows = results.data.map(row=>{
+        const obj = {};
+        synthHeaders.forEach((h,i)=> obj[h] = row[i] ?? '');
+        return obj;
+      });
+      ingestParsedCsv({ meta:{fields: synthHeaders}, data: rows }, name);
+    } else {
+      const results = Papa.parse(text, { header:true, skipEmptyLines:true, dynamicTyping:false, delimiter:',' });
+      if(results.errors && results.errors.length){
+        alert('Could not parse that CSV: ' + results.errors[0].message);
+        return;
+      }
+      ingestParsedCsv(results, name);
+    }
+  }
+
+  document.getElementById('noHeaderToggle').addEventListener('change', e=>{
+    noHeaderOverride = e.target.checked;
+    if(rawCsvText) parseWithHeaderSetting(rawCsvText, currentFileName, noHeaderOverride);
+  });
+
+  let currentFileName = '';
+
   function ingestParsedCsv(results, name){
+    currentFileName = name;
     headers = results.meta.fields || [];
     rawRows = results.data;
     showFileChip(name, rawRows.length);
@@ -681,6 +730,21 @@
   function guessColumns(hdrs){
     const norm = h => h.toLowerCase().replace(/[^a-z0-9]/g,'');
     const find = (cands) => hdrs.find(h => cands.includes(norm(h))) || null;
+    // Synthetic "Column N" headers (no-header CSVs) won't match any of
+    // these named patterns, which is fine — user maps them manually via
+    // the dropdowns. As a small extra courtesy, if every header looks like
+    // "Column N", assume the common survey-file column order: ID, X, Y, Z,
+    // Description — so the common case still auto-fills correctly.
+    const isSynthetic = hdrs.length > 0 && hdrs.every(h => /^Column \d+$/.test(h));
+    if(isSynthetic){
+      return {
+        id: hdrs[0] || null,
+        x: hdrs[1] || null,
+        y: hdrs[2] || null,
+        z: hdrs[3] || null,
+        desc: hdrs[4] || null
+      };
+    }
     return {
       id:   find(['id','pointid','ptid','name','pointname','point','label']),
       x:    find(['x','easting','east','pointx','xcoord','coordx']),
@@ -1123,6 +1187,8 @@
 
   function fullReset(){
     rawRows = []; headers = []; mapping = {id:null,x:null,y:null,z:null,desc:null};
+    rawCsvText = ''; noHeaderOverride = null; currentFileName = '';
+    document.getElementById('noHeaderToggle').checked = false;
     document.getElementById('fileChipHolder').innerHTML = '';
     document.getElementById('section-map').style.display = 'none';
     document.getElementById('section-crs').style.display = 'none';
