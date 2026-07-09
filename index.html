@@ -1249,7 +1249,7 @@
   function onExplorerEvent(event, data){
     console.log('[Point Mapper] explorer event:', event, data);
     const candidate = findCsvFileInPayload(data);
-    if(candidate) loadConnectFile(candidate.id, candidate.name);
+    if(candidate) loadConnectFile(candidate.id, candidate.name, candidate.versionId);
   }
 
   function findCsvFileInPayload(data){
@@ -1268,14 +1268,16 @@
     if(id) loadConnectFile(id, id + '.csv');
   });
 
-  async function loadConnectFile(fileId, name){
+  async function loadConnectFile(fileId, name, versionId){
     setModalStatus('warn', `Downloading ${name}… (file id: ${fileId})`);
     try{
-      // Calls our own Cloudflare Pages Function (same origin as this page),
-      // which does the actual Trimble Core API request server-side — that
+      // Calls our own Cloudflare Worker (same origin as this page), which
+      // does the actual Trimble Core API request server-side — that
       // sidesteps the browser CORS block hit when calling Trimble's API
       // directly from a third-party page.
-      const res = await fetch(`/api/download-file?fileId=${encodeURIComponent(fileId)}`, {
+      const qs = new URLSearchParams({ fileId });
+      if(versionId) qs.set('versionId', versionId);
+      const res = await fetch(`/api/download-file?${qs.toString()}`, {
         headers: { Authorization: `Bearer ${tcAccessToken}` }
       });
       if(!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
