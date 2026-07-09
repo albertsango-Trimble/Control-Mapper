@@ -1162,6 +1162,19 @@
           window.__tcApi = api;
           tcOuterApi = api;
           document.getElementById('browseConnectBtn').disabled = false;
+
+          // This is the call that actually puts "Point Mapper" into Connect's
+          // left-hand navigation menu. Being enabled in Project Settings >
+          // Extensions is not enough on its own — the extension has to
+          // register its own menu entry once it connects.
+          try{
+            api.ui.setMenu({
+              title: 'Point Mapper',
+              icon: 'https://albertsango-trimble.github.io/Control-Mapper/images.png',
+              command: 'point_mapper_open'
+            });
+          }catch(e){ /* older Connect versions may not support setMenu; extension still usable if opened directly */ }
+
           // Ask for an access token up front so Browse from Connect is instant later.
           // The user may see a one-time consent prompt inside Connect; the token
           // itself arrives via the extension.accessToken event above.
