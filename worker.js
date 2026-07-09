@@ -31,9 +31,10 @@ async function resolveContent(bodyText, auth) {
   try {
     const parsed = JSON.parse(bodyText);
 
-    const pointerFrom = (obj) =>
-      obj && (obj.url || obj.downloadUrl || obj.data ||
-        (Array.isArray(obj.thumbnailUrl) ? obj.thumbnailUrl[0] : null));
+    // NOTE: thumbnailUrl is deliberately NOT checked here — it always points
+    // to a generic file-type icon graphic (confirmed: we got back an Adobe
+    // Illustrator SVG for a CSV file), never the actual file content.
+    const pointerFrom = (obj) => obj && (obj.url || obj.downloadUrl || obj.data);
 
     // Array response (e.g. a versions list) — check entries newest-first.
     if (Array.isArray(parsed)) {
