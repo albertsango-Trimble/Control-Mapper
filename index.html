@@ -1223,6 +1223,7 @@
         TrimbleConnectWorkspace.connect(window.parent, function(event, data){
           if(event === 'extension.accessToken' && data && data.accessToken){
             tcAccessToken = data.accessToken;
+            prewarmExplorer();
           }
           if(event === 'extension.userSettingsChanged'){
             tcOuterApi && tcOuterApi.project.getProject().then(applyProjectCrsInfo);
@@ -1248,11 +1249,11 @@
           // The user may see a one-time consent prompt inside Connect; the token
           // itself arrives via the extension.accessToken event above.
           api.extension.getPermission('accesstoken').then(function(res){
-            if(typeof res === 'string' && res.length > 20) tcAccessToken = res;
+            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); }
           }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
           return api.project.getProject();
         }).then(function(project){
-          if(project) applyProjectCrsInfo(project);
+          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); }
         }).catch(function(){
           // Not actually running inside Connect, or getProject isn't permitted — stays in standalone mode.
         });
@@ -1268,6 +1269,7 @@
   const modal = document.getElementById('connectModal');
   const explorerFrame = document.getElementById('explorerIframe');
   let explorerApi = null;
+  let explorerReadyPromise = null; // set once we start warming the iframe up
 
   function setModalStatus(kind, msg){
     const el = document.getElementById('connectModalStatus');
@@ -1279,24 +1281,45 @@
   document.getElementById('connectModalClose').addEventListener('click', closeConnectBrowser);
   modal.addEventListener('click', e=>{ if(e.target === modal) closeConnectBrowser(); });
 
+  // Starts loading Trimble's embedded file explorer in a hidden iframe as
+  // soon as we have everything it needs (access token + project id) —
+  // rather than waiting until the user actually clicks "Browse from
+  // Trimble Connect". That app is heavy (full React bundle, analytics,
+  // chat UI, several regional-host lookups) so starting it early hides
+  // most of that latency behind whatever else the user is doing first.
+  function prewarmExplorer(){
+    if(explorerReadyPromise) return explorerReadyPromise; // already warming or warm
+    if(!tcAccessToken || !tcProject) return null; // not ready yet, caller can retry later
+
+    explorerReadyPromise = (async () => {
+      explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
+      explorerApi = await TrimbleConnectWorkspace.connect(explorerFrame, onExplorerEvent, 30000);
+      await explorerApi.embed.setTokens({ accessToken: tcAccessToken });
+      await explorerApi.embed.initFileExplorer({ projectId: tcProject.id });
+    })();
+    return explorerReadyPromise;
+  }
+
   async function openConnectBrowser(){
     if(!tcOuterApi){
       alert('Not connected to Trimble Connect — this only works when the extension is running inside a project.');
       return;
     }
     modal.style.display = 'flex';
-    setModalStatus('warn', 'Connecting to Trimble Connect…');
 
     try{
       if(!tcAccessToken){
+        setModalStatus('warn', 'Requesting access…');
         tcAccessToken = await tcOuterApi.extension.getPermission('accesstoken');
       }
-      const project = await tcOuterApi.project.getProject();
-
-      explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
-      explorerApi = await TrimbleConnectWorkspace.connect(explorerFrame, onExplorerEvent, 30000);
-      await explorerApi.embed.setTokens({ accessToken: tcAccessToken });
-      await explorerApi.embed.initFileExplorer({ projectId: project.id });
+      if(!tcProject){
+        tcProject = await tcOuterApi.project.getProject();
+      }
+      const ready = prewarmExplorer();
+      if(ready){
+        setModalStatus('warn', 'Connecting to Trimble Connect…');
+        await ready;
+      }
       setModalStatus('ok', 'Click a CSV file to load it. (If nothing happens on click, use the manual field below.)');
     }catch(e){
       setModalStatus('err', "Couldn't open the Connect file browser — use the manual file ID field below instead.");
@@ -1305,8 +1328,9 @@
 
   function closeConnectBrowser(){
     modal.style.display = 'none';
-    explorerFrame.src = 'about:blank';
-    explorerApi = null;
+    // Deliberately NOT tearing down explorerFrame/explorerApi here — keeping
+    // the already-loaded explorer alive means reopening the modal later is
+    // instant instead of re-paying the full load cost again.
   }
 
   // The embedded explorer's exact "file selected" event isn't part of the
