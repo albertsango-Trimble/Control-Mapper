@@ -62,21 +62,51 @@ async function handleDownload(request, url) {
 
   for (const host of CANDIDATE_HOSTS) {
     try {
-      const res = await fetch(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}/data`, {
+      // Step 1: fetch file metadata. This is the well-established, standard
+      // REST shape (GET /files/{id}) — far more likely to be correct than
+      // guessing a raw content-download path outright.
+      const metaRes = await fetch(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}`, {
         headers: { Authorization: auth }
       });
 
-      if (res.ok) {
-        const text = await res.text();
-        return new Response(text, {
-          status: 200,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
-        });
+      if (!metaRes.ok) {
+        lastStatus = metaRes.status;
+        lastBody = await metaRes.text().catch(() => '');
+        continue; // try next regional host
       }
 
-      lastStatus = res.status;
-      lastBody = await res.text().catch(() => '');
-      // A 404 here plausibly means "wrong region" — try the next host.
+      const meta = await metaRes.json();
+
+      // Step 2: look for a download link Trimble's own response gives us,
+      // rather than guessing a URL pattern. Check the most likely field
+      // names/shapes without assuming which one this API actually uses.
+      const downloadUrl =
+        meta.downloadUrl ||
+        meta.url ||
+        meta?.versions?.[meta.versions.length - 1]?.downloadUrl ||
+        meta?.versions?.[meta.versions.length - 1]?.url;
+
+      if (downloadUrl) {
+        const fileRes = await fetch(downloadUrl, { headers: { Authorization: auth } });
+        if (fileRes.ok) {
+          const text = await fileRes.text();
+          return new Response(text, {
+            status: 200,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
+          });
+        }
+        lastStatus = `metadata ok, but downloadUrl fetch failed: ${fileRes.status}`;
+        lastBody = await fileRes.text().catch(() => '');
+        continue;
+      }
+
+      // We got file metadata but couldn't find a download link in it under
+      // any of the field names we checked. Surface the raw shape so we can
+      // see Trimble's actual field names instead of guessing further.
+      return new Response(
+        `Got file metadata but couldn't find a download link in it. Raw response so we can see the real field names:\n\n${JSON.stringify(meta, null, 2)}`.slice(0, 1500),
+        { status: 502, headers: CORS_HEADERS }
+      );
     } catch (e) {
       lastStatus = 'network-error';
       lastBody = String(e);
@@ -84,7 +114,7 @@ async function handleDownload(request, url) {
   }
 
   return new Response(
-    `Could not fetch file from any known Trimble region host. Last status: ${lastStatus}. ${lastBody}`.slice(0, 500),
+    `Could not fetch file metadata from any known Trimble region host. Last status: ${lastStatus}. ${lastBody}`.slice(0, 800),
     { status: 502, headers: CORS_HEADERS }
   );
 }
