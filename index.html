@@ -28,6 +28,7 @@
     --copper:#c97b3d;
     --copper-bright:#e0954f;
     --green:#5b8c5a;
+    --blue:#4a90d9;
     --red:#c0564a;
     --font-ui:'Space Grotesk', sans-serif;
     --font-mono:'IBM Plex Mono', monospace;
@@ -357,6 +358,14 @@
   }
   #ptCount b{ color:var(--copper-bright); }
 
+  #colorLegend{
+    position:absolute; top:50px; left:52px; z-index:1000;
+    padding:6px 12px; font-family:var(--font-mono); font-size:10.5px; color:var(--ink-dim);
+    display:flex; gap:12px;
+  }
+  #colorLegend .swatch{ display:inline-flex; align-items:center; gap:5px; }
+  #colorLegend .dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
   /* survey-nail marker */
   .survey-marker{ position:relative; width:22px; height:22px; }
   .survey-marker svg{ display:block; }
@@ -548,6 +557,7 @@
     <div id="map"></div>
     <div id="pickBanner">◎ Click the map to set this point's location</div>
     <div class="glass-panel" id="ptCount">no points plotted</div>
+    <div class="glass-panel" id="colorLegend" style="display:none;"></div>
     <img id="watermarkLogo" src="/upg-logo.png" alt="Ultimate Positioning Group" onerror="this.style.display='none'">
     <div id="topbar">
       <div class="glass-panel" id="layerToggle">
@@ -982,6 +992,19 @@
     return L.divIcon({ html, className:'', iconSize:[22,22], iconAnchor:[11,11], popupAnchor:[0,-10] });
   }
 
+  // Points sourced from master_control.csv render green; points from any
+  // other imported CSV render blue — a quick visual read of what's already
+  // "official" versus what's newly added and not yet deployed.
+  const MASTER_FILE_NAME = 'master_control.csv';
+  const MASTER_COLOR = '#5b8c5a';
+  const OTHER_COLOR = '#4a90d9';
+  function isMasterSource(source){
+    return (source || '').trim().toLowerCase() === MASTER_FILE_NAME;
+  }
+  function colorForSource(source){
+    return isMasterSource(source) ? MASTER_COLOR : OTHER_COLOR;
+  }
+
   // ---------------- File handling ----------------
   const drop = document.getElementById('drop');
   const fileInput = document.getElementById('fileInput');
@@ -1346,6 +1369,7 @@
     if(cpMarkerLayer){ map.removeLayer(cpMarkerLayer); cpMarkerLayer=null; }
     if(plottedLayer){ map.removeLayer(plottedLayer); plottedLayer=null; }
     document.getElementById('ptCount').textContent = 'no points plotted';
+    document.getElementById('colorLegend').style.display = 'none';
     document.getElementById('plottedCount').textContent = '0';
     if(tcProject) applyProjectCrsInfo(tcProject); // re-apply any known project CRS
   }
@@ -1578,7 +1602,8 @@
       if(!ll) return;
       const {lat, lon} = ll;
       const isCp = controlPoints.some(cp=>cp.rowIndex===p.rowIndex);
-      const marker = L.marker([lat,lon], {icon: p.destroyed ? destroyedIcon() : surveyIcon(isCp ? '#c97b3d' : '#5b8c5a', false)})
+      const color = colorForSource(p.source);
+      const marker = L.marker([lat,lon], {icon: p.destroyed ? destroyedIcon() : surveyIcon(color, isCp)})
         .bindPopup(
           `<div class="popup-title">${escapeHtml(String(p.id))}${p.destroyed ? ' <span style="color:#c0564a;">(destroyed)</span>' : ''}</div>` +
           (p.desc ? `<div class="popup-row">${escapeHtml(String(p.desc))}</div>` : '') +
@@ -1597,6 +1622,20 @@
 
     document.getElementById('ptCount').innerHTML = `<b>${bounds.length}</b> points plotted`;
     document.getElementById('plottedCount').textContent = bounds.length;
+
+    const hasMaster = points.some(p=>isMasterSource(p.source));
+    const hasOther = points.some(p=>!isMasterSource(p.source));
+    const legend = document.getElementById('colorLegend');
+    if(hasMaster || hasOther){
+      legend.innerHTML = [
+        hasMaster ? `<span class="swatch"><span class="dot" style="background:${MASTER_COLOR};"></span>master_control</span>` : '',
+        hasOther ? `<span class="swatch"><span class="dot" style="background:${OTHER_COLOR};"></span>other CSV</span>` : ''
+      ].filter(Boolean).join('');
+      legend.style.display = 'flex';
+    } else {
+      legend.style.display = 'none';
+    }
+
     renderPointTable();
   }
 
