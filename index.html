@@ -1807,6 +1807,7 @@
       const uploadData = await uploadRes.json();
       const fileId = uploadData.file && uploadData.file.id;
       if(!fileId) throw new Error('Upload succeeded but no file id came back — check the raw response.');
+      saveMasterFileRef(fileId, folderId);
 
       statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Tagging file as TrimbleAccess.ProjectFile…</span></div>`;
 
@@ -1891,6 +1892,7 @@
           if(event === 'extension.accessToken' && data && data.accessToken){
             tcAccessToken = data.accessToken;
             prewarmExplorer();
+            tryAutoLoadMaster();
           }
           if(event === 'extension.userSettingsChanged'){
             tcOuterApi && tcOuterApi.project.getProject().then(applyProjectCrsInfo);
@@ -1916,11 +1918,11 @@
           // The user may see a one-time consent prompt inside Connect; the token
           // itself arrives via the extension.accessToken event above.
           api.extension.getPermission('accesstoken').then(function(res){
-            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); }
+            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); tryAutoLoadMaster(); }
           }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
           return api.project.getProject();
         }).then(function(project){
-          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); }
+          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); }
         }).catch(function(){
           // Not actually running inside Connect, or getProject isn't permitted — stays in standalone mode.
         });
@@ -1965,6 +1967,57 @@
       await explorerApi.embed.initFileExplorer({ projectId: tcProject.id });
     })();
     return explorerReadyPromise;
+  }
+
+  // ---------------- Remembering master_control.csv across sessions ----------------
+  // After a deploy, this browser remembers which file is master_control.csv
+  // for this project, so reopening the extension later loads it
+  // automatically instead of requiring a manual re-import every time.
+  // Scoped per Trimble Connect project (not per-browser-globally), and
+  // deliberately just a local convenience: it's per browser/device, so a
+  // teammate opening this on a different machine won't see it auto-load
+  // until they've deployed or imported it there at least once too.
+  function masterRefStorageKey(){
+    return tcProject ? `controlMapper.masterRef.${tcProject.id}` : null;
+  }
+
+  function saveMasterFileRef(fileId, folderId){
+    const key = masterRefStorageKey();
+    if(!key) return;
+    try{ localStorage.setItem(key, JSON.stringify({ fileId, folderId, savedOn: Date.now() })); }
+    catch(e){ /* storage unavailable/full — not critical, deploy itself still succeeded */ }
+  }
+
+  function getSavedMasterRef(){
+    const key = masterRefStorageKey();
+    if(!key) return null;
+    try{
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    }catch(e){ return null; }
+  }
+
+  let masterAutoLoadAttempted = false;
+
+  async function tryAutoLoadMaster(){
+    if(masterAutoLoadAttempted) return;
+    if(!tcProject || !tcAccessToken) return;
+    const ref = getSavedMasterRef();
+    if(!ref || !ref.fileId) return;
+    masterAutoLoadAttempted = true;
+
+    try{
+      const res = await fetch(`/api/download-file?fileId=${encodeURIComponent(ref.fileId)}`, {
+        headers: { Authorization: `Bearer ${tcAccessToken}` }
+      });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      ingestCsvText(text, 'master_control.csv');
+    }catch(e){
+      // Non-blocking — the remembered file may have been moved/deleted;
+      // user can still Browse from Trimble Connect manually.
+      console.warn('[Control Mapper] Auto-load of master_control.csv failed:', e.message);
+    }
   }
 
   async function openConnectBrowser(){
