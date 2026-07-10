@@ -753,10 +753,12 @@
   document.getElementById('showSatUnderlayToggle').addEventListener('change', e=>{
     showSatUnderlay = e.target.checked;
     updateCustomUnderlays();
+    updateSavedUnderlayPrefs();
   });
   document.getElementById('showStreetUnderlayToggle').addEventListener('change', e=>{
     showStreetUnderlay = e.target.checked;
     updateCustomUnderlays();
+    updateSavedUnderlayPrefs();
   });
 
   document.querySelectorAll('#layerToggle button[data-layer]').forEach(btn=>{
@@ -956,6 +958,8 @@
     if(layer.bbox){
       map.fitBounds([[layer.bbox.south, layer.bbox.west],[layer.bbox.north, layer.bbox.east]], { padding:[40,40] });
     }
+
+    saveWmtsRef({ url, attribution, bbox: layer.bbox, title: layer.title, capsUrl: document.getElementById('wmtsCapsUrl').value.trim() });
 
     setTimeout(closeCustomLayerPanel, 600);
   });
@@ -1922,7 +1926,7 @@
           }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
           return api.project.getProject();
         }).then(function(project){
-          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); }
+          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); tryAutoLoadWmts(); }
         }).catch(function(){
           // Not actually running inside Connect, or getProject isn't permitted — stays in standalone mode.
         });
@@ -2017,6 +2021,87 @@
       // Non-blocking — the remembered file may have been moved/deleted;
       // user can still Browse from Trimble Connect manually.
       console.warn('[Control Mapper] Auto-load of master_control.csv failed:', e.message);
+    }
+  }
+
+  // ---------------- Remembering the WMTS base map across sessions ----------------
+  // Same idea as master_control.csv: remember the resolved tile URL (not
+  // just the capabilities URL) so reopening the extension re-applies the
+  // last WMTS layer immediately, without re-fetching/re-parsing the
+  // capabilities document or having to reselect a layer. Per-project,
+  // per-browser — same caveat as the master_control.csv memory above.
+  function wmtsRefStorageKey(){
+    return tcProject ? `controlMapper.wmtsRef.${tcProject.id}` : null;
+  }
+
+  function saveWmtsRef(layerInfo){
+    const key = wmtsRefStorageKey();
+    if(!key) return;
+    try{
+      localStorage.setItem(key, JSON.stringify({
+        ...layerInfo,
+        showSatUnderlay, showStreetUnderlay,
+        savedOn: Date.now()
+      }));
+    }catch(e){ /* storage unavailable/full — not critical */ }
+  }
+
+  function updateSavedUnderlayPrefs(){
+    const key = wmtsRefStorageKey();
+    if(!key) return;
+    try{
+      const raw = localStorage.getItem(key);
+      if(!raw) return; // nothing to update if no WMTS layer has ever been saved
+      const ref = JSON.parse(raw);
+      ref.showSatUnderlay = showSatUnderlay;
+      ref.showStreetUnderlay = showStreetUnderlay;
+      localStorage.setItem(key, JSON.stringify(ref));
+    }catch(e){ /* not critical */ }
+  }
+
+  function getSavedWmtsRef(){
+    const key = wmtsRefStorageKey();
+    if(!key) return null;
+    try{
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    }catch(e){ return null; }
+  }
+
+  let wmtsAutoLoadAttempted = false;
+
+  function tryAutoLoadWmts(){
+    if(wmtsAutoLoadAttempted) return;
+    if(!tcProject) return;
+    wmtsAutoLoadAttempted = true;
+
+    const ref = getSavedWmtsRef();
+    if(!ref || !ref.url) return;
+
+    if(typeof ref.showSatUnderlay === 'boolean'){
+      showSatUnderlay = ref.showSatUnderlay;
+      document.getElementById('showSatUnderlayToggle').checked = showSatUnderlay;
+    }
+    if(typeof ref.showStreetUnderlay === 'boolean'){
+      showStreetUnderlay = ref.showStreetUnderlay;
+      document.getElementById('showStreetUnderlayToggle').checked = showStreetUnderlay;
+    }
+
+    customTileLayer = L.tileLayer(ref.url, { attribution: ref.attribution || '', maxZoom: 24 });
+    baseLayers.custom = customTileLayer;
+    customLayerBoundsRect = ref.bbox
+      ? L.rectangle(
+          [[ref.bbox.south, ref.bbox.west],[ref.bbox.north, ref.bbox.east]],
+          { color:'#e0392f', weight:2, fill:false, interactive:false }
+        )
+      : null;
+
+    document.getElementById('customLayerToggleBtn').textContent = 'Custom ✓';
+    document.getElementById('wmtsCapsUrl').value = ref.capsUrl || '';
+
+    switchToLayer('custom');
+    if(ref.bbox){
+      map.fitBounds([[ref.bbox.south, ref.bbox.west],[ref.bbox.north, ref.bbox.east]], { padding:[40,40] });
     }
   }
 
