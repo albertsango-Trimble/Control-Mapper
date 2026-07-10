@@ -361,9 +361,10 @@
   #colorLegend{
     position:absolute; top:50px; left:52px; z-index:1000;
     padding:6px 12px; font-family:var(--font-mono); font-size:10.5px; color:var(--ink-dim);
-    display:flex; gap:12px;
+    display:flex; gap:12px; max-width:min(70vw, 480px);
   }
-  #colorLegend .swatch{ display:inline-flex; align-items:center; gap:5px; }
+  #colorLegend .swatch{ display:inline-flex; align-items:center; gap:5px; min-width:0; }
+  #colorLegend .swatch span:last-child{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #colorLegend .dot{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 
   /* survey-nail marker */
@@ -1633,13 +1634,13 @@
     document.getElementById('ptCount').innerHTML = `<b>${bounds.length}</b> points plotted`;
     document.getElementById('plottedCount').textContent = bounds.length;
 
-    const hasMaster = points.some(p=>isMasterSource(p.source));
-    const hasOther = points.some(p=>!isMasterSource(p.source));
+    const masterNames = [...new Set(points.filter(p=>isMasterSource(p.source)).map(p=>p.source))];
+    const otherNames = [...new Set(points.filter(p=>!isMasterSource(p.source)).map(p=>p.source).filter(Boolean))];
     const legend = document.getElementById('colorLegend');
-    if(hasMaster || hasOther){
+    if(masterNames.length || otherNames.length){
       legend.innerHTML = [
-        hasMaster ? `<span class="swatch"><span class="dot" style="background:${MASTER_COLOR};"></span>master_control</span>` : '',
-        hasOther ? `<span class="swatch"><span class="dot" style="background:${OTHER_COLOR};"></span>other CSV</span>` : ''
+        masterNames.length ? `<span class="swatch"><span class="dot" style="background:${MASTER_COLOR};"></span><span title="${escapeHtml(masterNames.join(', '))}">${escapeHtml(masterNames.join(', '))}</span></span>` : '',
+        otherNames.length ? `<span class="swatch"><span class="dot" style="background:${OTHER_COLOR};"></span><span title="${escapeHtml(otherNames.join(', '))}">${escapeHtml(otherNames.join(', '))}</span></span>` : ''
       ].filter(Boolean).join('');
       legend.style.display = 'flex';
     } else {
