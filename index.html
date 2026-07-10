@@ -1913,6 +1913,15 @@
         setModalStatus('warn', 'Connecting to Trimble Connect…');
         await ready;
       }
+      // Force a fresh listing on every open — the prewarmed iframe is kept
+      // alive between opens for speed, but that means initFileExplorer only
+      // ran once, so without this the view stays stuck on whatever the
+      // project looked like the first time it loaded, missing anything
+      // added since.
+      if(explorerApi){
+        setModalStatus('warn', 'Refreshing file list…');
+        await explorerApi.embed.initFileExplorer({ projectId: tcProject.id });
+      }
       setModalStatus('ok', 'Click a CSV file to load it. (If nothing happens on click, use the manual field below.)');
     }catch(e){
       setModalStatus('err', "Couldn't open the Connect file browser — use the manual file ID field below instead.");
