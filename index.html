@@ -642,6 +642,7 @@
         <button class="btn small" id="customLayerCancelBtn">Cancel</button>
         <button class="btn primary small" id="customLayerApplyBtn">Apply &amp; use</button>
       </div>
+      <button class="btn full small" id="customLayerClearBtn" style="margin-top:8px; color:var(--red); border-color:var(--red);">Clear WMTS</button>
     </div>
   </div>
 
@@ -838,6 +839,40 @@
 
   let wmtsLayers = [];       // parsed from the last-loaded capabilities doc
   let wmtsKvpBase = null;    // fallback GetTile endpoint if no RESTful template
+
+  document.getElementById('customLayerClearBtn').addEventListener('click', ()=>{
+    if(!baseLayers.custom && !wmtsLayers.length && !document.getElementById('wmtsCapsUrl').value.trim()){
+      setCustomLayerStatus('warn', 'No WMTS layer is set.');
+      return;
+    }
+    if(!confirm('Remove the WMTS base map? This also forgets it for next time you open this project.')) return;
+
+    // Remove from the map and drop the in-memory layer entirely.
+    if(baseLayers.custom && map.hasLayer(baseLayers.custom)) map.removeLayer(baseLayers.custom);
+    if(customLayerBoundsRect && map.hasLayer(customLayerBoundsRect)) map.removeLayer(customLayerBoundsRect);
+    baseLayers.custom = null;
+    customTileLayer = null;
+    customLayerBoundsRect = null;
+
+    if(currentLayer === 'custom'){
+      switchToLayer('street'); // currentLayer is still 'custom' here, so this actually runs (not a same-layer no-op)
+    }
+
+    // Clear the capabilities form state.
+    wmtsLayers = [];
+    wmtsKvpBase = null;
+    document.getElementById('wmtsCapsUrl').value = '';
+    document.getElementById('wmtsLayerField').style.display = 'none';
+    document.getElementById('wmtsAttributionField').style.display = 'none';
+    document.getElementById('wmtsLayerSelect').innerHTML = '';
+    document.getElementById('customLayerToggleBtn').textContent = 'Custom';
+
+    // Forget it for next session too.
+    const key = wmtsRefStorageKey();
+    if(key){ try{ localStorage.removeItem(key); }catch(e){ /* not critical */ } }
+
+    setCustomLayerStatus('ok', 'WMTS layer cleared.');
+  });
 
   // ---- WMTS Capabilities: fetch (via our proxy, to sidestep CORS) + parse ----
   document.getElementById('wmtsLoadBtn').addEventListener('click', loadWmtsCapabilities);
