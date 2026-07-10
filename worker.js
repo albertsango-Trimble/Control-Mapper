@@ -161,6 +161,48 @@ async function handleListFolder(request, url) {
   }
 }
 
+async function handleListVersions(request, url) {
+  const auth = request.headers.get('Authorization');
+  const projectId = url.searchParams.get('projectId');
+  const fileId = url.searchParams.get('fileId');
+
+  if (!auth) return new Response('Missing Authorization header', { status: 401, headers: CORS_HEADERS });
+  if (!projectId) return new Response('Missing projectId', { status: 400, headers: CORS_HEADERS });
+  if (!fileId) return new Response('Missing fileId', { status: 400, headers: CORS_HEADERS });
+
+  const discovered = await discoverHost(auth, projectId);
+  if (!discovered) {
+    return new Response('Could not reach any known Trimble region host for this project', { status: 502, headers: CORS_HEADERS });
+  }
+  const { host } = discovered;
+
+  try {
+    const res = await fetch(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions`, {
+      headers: { Authorization: auth }
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return new Response(`Could not list versions: HTTP ${res.status} ${body}`, { status: 502, headers: CORS_HEADERS });
+    }
+    const versions = await res.json();
+    const payload = {
+      host,
+      versions: (Array.isArray(versions) ? versions : []).map(v => ({
+        versionId: v.versionId || v.id,
+        revision: v.revision,
+        size: v.size,
+        modifiedOn: v.modifiedOn,
+        modifiedBy: v.modifiedBy ? { firstName: v.modifiedBy.firstName, lastName: v.modifiedBy.lastName, email: v.modifiedBy.email } : null
+      }))
+    };
+    return new Response(JSON.stringify(payload), {
+      status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response(`Fetch failed: ${e}`, { status: 502, headers: CORS_HEADERS });
+  }
+}
+
 async function handleUploadFile(request) {
   const auth = request.headers.get('Authorization');
   if (!auth) return new Response('Missing Authorization header', { status: 401, headers: CORS_HEADERS });
@@ -308,6 +350,15 @@ export default {
       }
       if (request.method === 'GET') {
         return handleListFolder(request, url);
+      }
+    }
+
+    if (url.pathname === '/api/list-versions') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+      if (request.method === 'GET') {
+        return handleListVersions(request, url);
       }
     }
 
