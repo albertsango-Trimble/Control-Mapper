@@ -576,10 +576,6 @@
         <p class="hint" id="deploySummary" style="margin-bottom:10px;"></p>
         <button class="btn primary full small" id="deployBtn">Deploy as master_control.csv…</button>
         <button class="btn full small" id="versionHistoryBtn" style="margin-top:8px;" disabled title="Deploy at least once first">Version history…</button>
-        <div class="col-grid" style="margin-top:8px;">
-          <button class="btn small" id="export12daBtn">Export .12da</button>
-          <button class="btn small" id="export12dazBtn">Export .12daz</button>
-        </div>
         <div id="deployStatus"></div>
         <div id="previewBanner" class="status-line warn" style="display:none; margin-top:10px;">
           <span class="dot"></span>
@@ -2009,53 +2005,6 @@
     };
     return points.map(p => [esc(p.id), esc(p.x), esc(p.y), esc(p.z!=null?p.z:''), esc(p.desc)].join(',')).join('\r\n') + '\r\n';
   }
-
-  // Writes each point as a single-vertex 3d string — the documented 12d
-  // convention for a standalone survey point (verified against 12d's own
-  // ASCII format spec). Descriptions go in a text attribute rather than a
-  // 4d string, since that avoids needing the extra display/justify fields
-  // a 4d (annotated) string expects.
-  function build12daText(){
-    const points = getPoints().filter(p=>p.valid && !p.destroyed);
-    const q = (s) => `"${String(s ?? '').replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"`;
-    const lines = ['// Exported from Control Mapper', ''];
-    points.forEach(p=>{
-      lines.push('string 3d {');
-      lines.push(`model "Control Mapper" name ${q(p.id)}`);
-      if(p.desc){
-        lines.push('attributes {');
-        lines.push(`text description ${q(p.desc)}`);
-        lines.push('}');
-      }
-      lines.push('data {');
-      lines.push(` ${p.x} ${p.y} ${p.z != null ? p.z : 0}`);
-      lines.push('}');
-      lines.push('}');
-      lines.push('');
-    });
-    return lines.join('\n');
-  }
-
-  function downloadBlob(blob, filename){
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url), 1000);
-  }
-
-  document.getElementById('export12daBtn').addEventListener('click', ()=>{
-    const text = build12daText();
-    downloadBlob(new Blob([text], {type:'text/plain'}), 'control_points.12da');
-  });
-
-  document.getElementById('export12dazBtn').addEventListener('click', async ()=>{
-    const text = build12daText();
-    const zip = new JSZip();
-    zip.file('control_points.12da', text);
-    const blob = await zip.generateAsync({type:'blob'});
-    downloadBlob(blob, 'control_points.12daz');
-  });
 
   // ---------------- Deploy: folder browser + upload + tag ----------------
   let folderPath = []; // [{id, name}]
