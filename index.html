@@ -414,6 +414,33 @@
     padding:12px 16px 16px;
     border-top:1px solid var(--line-cyan-dim);
   }
+
+  /* Conflict resolution rows */
+  .conflict-row{
+    background:var(--navy-800); border:1px solid var(--line-cyan-dim); border-radius:6px;
+    padding:10px 12px; margin-bottom:10px;
+  }
+  .conflict-row .cid{ font-family:var(--font-mono); font-weight:600; font-size:12.5px; margin-bottom:6px; }
+  .conflict-compare{ display:grid; grid-template-columns:1fr 1fr; gap:8px; font-family:var(--font-mono); font-size:11px; margin-bottom:8px; }
+  .conflict-compare .lbl{ color:var(--ink-dim); font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px; }
+  .conflict-choice{ display:flex; gap:6px; }
+  .conflict-choice button{
+    flex:1; font-family:var(--font-ui); font-size:11px; padding:6px 8px; border-radius:5px; cursor:pointer;
+    background:var(--navy-700); border:1px solid var(--line-cyan-dim); color:var(--ink);
+  }
+  .conflict-choice button.chosen{ background:var(--copper); border-color:var(--copper); color:var(--navy-950); font-weight:600; }
+
+  /* Folder browser list */
+  .folder-item{
+    display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:6px; cursor:pointer;
+    font-family:var(--font-mono); font-size:12px;
+  }
+  .folder-item:hover{ background:var(--navy-800); }
+  .folder-item .icon{ flex-shrink:0; opacity:.8; }
+  .folder-item.file{ opacity:.45; cursor:default; }
+  .folder-item.file:hover{ background:none; }
+  .folder-crumb{ cursor:pointer; color:var(--copper-bright); }
+  .folder-crumb:hover{ text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -499,11 +526,19 @@
         <p class="section-label collapsible" data-target="section-points"><span class="num">03</span> Points <span style="color:var(--ink-dim); font-weight:400;">(<span id="plottedCount">0</span> plotted)</span><span class="chevron">▾</span></p>
         <div class="table-wrap">
           <table id="pointTable">
-            <thead><tr><th>ID</th><th>X</th><th>Y</th><th>Z</th></tr></thead>
+            <thead><tr><th>ID</th><th>X</th><th>Y</th><th>Z</th><th>Status</th></tr></thead>
             <tbody id="pointTableBody"></tbody>
           </table>
         </div>
-        <button class="btn full small" id="clearAllBtn" style="margin-top:10px;">Reset / load new CSV</button>
+        <button class="btn full small" id="clearAllBtn" style="margin-top:10px;">Clear all points</button>
+      </div>
+
+      <!-- 4. Deploy -->
+      <div class="section" id="section-deploy" style="display:none;">
+        <p class="section-label collapsible" data-target="section-deploy"><span class="num">04</span> Deploy<span class="chevron">▾</span></p>
+        <p class="hint" id="deploySummary" style="margin-bottom:10px;"></p>
+        <button class="btn primary full small" id="deployBtn">Deploy as master_control.csv…</button>
+        <div id="deployStatus"></div>
       </div>
 
     </div>
@@ -581,6 +616,38 @@
           <input type="text" id="manualFileId" placeholder="file id">
           <button class="btn small" id="loadByIdBtn">Load by ID</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="conflictModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="height:auto; max-height:80vh;">
+      <div class="modal-head">
+        <span>Resolve duplicate Point IDs</span>
+        <button id="conflictModalClose" class="pick-btn" title="Close">✕</button>
+      </div>
+      <p class="hint" style="margin:12px 16px;">
+        These Point IDs already exist with different X/Y/Z. Choose what to
+        do with each — unresolved rows default to <b>keep existing</b>.
+      </p>
+      <div id="conflictList" style="overflow-y:auto; padding:0 16px; flex:1;"></div>
+      <div class="modal-fallback">
+        <button class="btn primary full small" id="conflictApplyBtn">Apply &amp; continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="folderModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="height:auto; max-height:80vh;">
+      <div class="modal-head">
+        <span>Choose a destination folder</span>
+        <button id="folderModalClose" class="pick-btn" title="Close">✕</button>
+      </div>
+      <div id="folderModalStatus" class="status-line warn" style="margin:12px 16px;"><span class="dot"></span><span>Loading…</span></div>
+      <div id="folderBreadcrumb" class="hint" style="margin:0 16px 8px;"></div>
+      <div id="folderList" style="overflow-y:auto; padding:0 16px; flex:1;"></div>
+      <div class="modal-fallback">
+        <button class="btn primary full small" id="folderUseHereBtn">Deploy to this folder</button>
       </div>
     </div>
   </div>
@@ -905,6 +972,16 @@
     return L.divIcon({ html, className:'', iconSize:[22,22], iconAnchor:[11,11], popupAnchor:[0,-10] });
   }
 
+  function destroyedIcon(){
+    const color = '#8a8f98';
+    const html = `<div class="survey-marker"><svg width="22" height="22" viewBox="0 0 22 22">
+      <circle cx="11" cy="11" r="7" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="3,2"/>
+      <line x1="7.5" y1="7.5" x2="14.5" y2="14.5" stroke="#c0564a" stroke-width="2"/>
+      <line x1="14.5" y1="7.5" x2="7.5" y2="14.5" stroke="#c0564a" stroke-width="2"/>
+    </svg></div>`;
+    return L.divIcon({ html, className:'', iconSize:[22,22], iconAnchor:[11,11], popupAnchor:[0,-10] });
+  }
+
   // ---------------- File handling ----------------
   const drop = document.getElementById('drop');
   const fileInput = document.getElementById('fileInput');
@@ -947,39 +1024,192 @@
       return;
     }
     const width = results.data.reduce((max,row)=>Math.max(max,row.length), 0);
-    const synthHeaders = Array.from({length: width}, (_,i)=>`Column ${i+1}`);
+    const synthHeaders = Array.from({length: Math.max(width,5)}, (_,i)=>`Column ${i+1}`);
     const rows = results.data.map(row=>{
       const obj = {};
       synthHeaders.forEach((h,i)=> obj[h] = row[i] ?? '');
       return obj;
     });
-    ingestParsedCsv({ meta:{fields: synthHeaders}, data: rows }, name);
+    mergeRows(synthHeaders, rows, name);
   }
 
-  function ingestParsedCsv(results, name){
-    headers = results.meta.fields || [];
-    rawRows = results.data;
-    mapping = { id: headers[0]||null, x: headers[1]||null, y: headers[2]||null, z: headers[3]||null, desc: headers[4]||null };
+  // Merges a newly-imported file's rows into the existing point set rather
+  // than replacing it — so a project can accumulate control points across
+  // multiple CSV imports as it grows. Point IDs that already exist with
+  // matching X/Y/Z are silently treated as duplicates; IDs that already
+  // exist with DIFFERENT X/Y/Z are queued for the user to resolve.
+  function mergeRows(newHeaders, newRows, sourceFile){
+    const isFirstImport = rawRows.length === 0;
+    if(isFirstImport){
+      headers = newHeaders;
+      mapping = { id: headers[0]||null, x: headers[1]||null, y: headers[2]||null, z: headers[3]||null, desc: headers[4]||null };
+    }
+    const idKey = headers[0], xKey = headers[1], yKey = headers[2], zKey = headers[3];
 
-    showFileChip(name, rawRows.length);
+    const existingIndexById = new Map();
+    rawRows.forEach((row,i)=>{
+      const id = row[idKey];
+      if(id !== undefined && id !== '') existingIndexById.set(id, i);
+    });
+
+    const closeEnough = (a,b)=>{
+      const fa = parseFloat(a), fb = parseFloat(b);
+      if(isNaN(fa) && isNaN(fb)) return true;
+      if(isNaN(fa) || isNaN(fb)) return false;
+      return Math.abs(fa-fb) < 0.0005;
+    };
+
+    const conflicts = [];
+
+    newRows.forEach(row=>{
+      const id = row[idKey];
+      row.__source = sourceFile;
+      row.__destroyed = false;
+
+      if(id === undefined || id === '' || !existingIndexById.has(id)){
+        rawRows.push(row);
+        if(id) existingIndexById.set(id, rawRows.length-1);
+        return;
+      }
+
+      const exIdx = existingIndexById.get(id);
+      const exRow = rawRows[exIdx];
+      const sameXYZ = closeEnough(exRow[xKey],row[xKey]) && closeEnough(exRow[yKey],row[yKey]) && closeEnough(exRow[zKey],row[zKey]);
+
+      if(sameXYZ) return; // true duplicate — nothing new, ignore silently
+      conflicts.push({ id, existingIndex: exIdx, existingRow: exRow, newRow: row, sourceFile });
+    });
+
+    addFileChip(sourceFile, newRows.length);
+
+    if(conflicts.length) showConflictModal(conflicts, isFirstImport);
+    else finishImport(isFirstImport);
+  }
+
+  function finishImport(isFirstImport){
     document.getElementById('rowCount').textContent = rawRows.length;
     document.getElementById('rowCountHint').style.display = 'block';
-
     document.getElementById('section-crs').style.display = 'block';
     document.getElementById('section-points').style.display = 'block';
     populateCpPicker();
     renderPointTable();
-
-    resetGeoref();
+    updateDeploySummary();
+    if(isFirstImport){
+      resetGeoref();
+    } else if((placementMode==='epsg' && epsgReady) || (placementMode==='controlPoints' && transform)){
+      plotAllPoints();
+    }
   }
 
-  function showFileChip(name, count){
-    document.getElementById('fileChipHolder').innerHTML = `
-      <div class="file-chip">
-        <span>📄 ${escapeHtml(name)} — ${count} rows</span>
-        <button id="chipRemove" title="Remove">✕</button>
-      </div>`;
-    document.getElementById('chipRemove').addEventListener('click', fullReset);
+  // ---------------- Duplicate-ID conflict resolution ----------------
+  let activeConflicts = [];
+  let conflictChoices = {};
+  let conflictIsFirstImport = false;
+
+  function showConflictModal(conflicts, isFirstImport){
+    activeConflicts = conflicts;
+    conflictChoices = {};
+    conflictIsFirstImport = isFirstImport;
+
+    const list = document.getElementById('conflictList');
+    list.innerHTML = '';
+    conflicts.forEach((c,i)=>{
+      conflictChoices[i] = 'existing';
+      const row = document.createElement('div');
+      row.className = 'conflict-row';
+      row.innerHTML = `
+        <div class="cid">${escapeHtml(String(c.id))}</div>
+        <div class="conflict-compare">
+          <div>
+            <div class="lbl">Existing${c.existingRow.__source ? ' — '+escapeHtml(c.existingRow.__source) : ''}</div>
+            x:${c.existingRow[headers[1]]} y:${c.existingRow[headers[2]]} z:${c.existingRow[headers[3]]||'—'}
+          </div>
+          <div>
+            <div class="lbl">New — ${escapeHtml(c.sourceFile)}</div>
+            x:${c.newRow[headers[1]]} y:${c.newRow[headers[2]]} z:${c.newRow[headers[3]]||'—'}
+          </div>
+        </div>
+        <div class="conflict-choice">
+          <button data-choice="existing" class="chosen">Keep existing</button>
+          <button data-choice="replace">Replace</button>
+          <button data-choice="both">Keep both</button>
+        </div>`;
+      row.querySelectorAll('.conflict-choice button').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          conflictChoices[i] = btn.dataset.choice;
+          row.querySelectorAll('.conflict-choice button').forEach(b=>b.classList.remove('chosen'));
+          btn.classList.add('chosen');
+        });
+      });
+      list.appendChild(row);
+    });
+
+    document.getElementById('conflictModal').style.display = 'flex';
+  }
+
+  document.getElementById('conflictModalClose').addEventListener('click', ()=>{
+    document.getElementById('conflictModal').style.display = 'none';
+    finishImport(conflictIsFirstImport);
+  });
+
+  document.getElementById('conflictApplyBtn').addEventListener('click', ()=>{
+    const idKey = headers[0];
+    const existingIds = new Set(rawRows.map(r=>r[idKey]).filter(Boolean));
+
+    activeConflicts.forEach((c,i)=>{
+      const choice = conflictChoices[i];
+      if(choice === 'replace'){
+        Object.assign(rawRows[c.existingIndex], c.newRow);
+      } else if(choice === 'both'){
+        let newId = c.id, n = 2;
+        while(existingIds.has(newId)){ newId = `${c.id} (${n})`; n++; }
+        c.newRow[idKey] = newId;
+        existingIds.add(newId);
+        rawRows.push(c.newRow);
+      }
+      // 'existing' — leave as-is
+    });
+
+    document.getElementById('conflictModal').style.display = 'none';
+    finishImport(conflictIsFirstImport);
+  });
+
+  // ---------------- File chips (multiple imports) ----------------
+  let importedFiles = []; // [{name, count}]
+
+  function addFileChip(name, count){
+    importedFiles.push({name, count});
+    renderFileChips();
+  }
+
+  function renderFileChips(){
+    const holder = document.getElementById('fileChipHolder');
+    holder.innerHTML = importedFiles.map((f,i)=>`
+      <div class="file-chip" style="margin-bottom:6px;">
+        <span>📄 ${escapeHtml(f.name)} — ${f.count} rows</span>
+        <button data-idx="${i}" class="chipRemoveBtn" title="Remove this file's points">✕</button>
+      </div>`).join('');
+    holder.querySelectorAll('.chipRemoveBtn').forEach(btn=>{
+      btn.addEventListener('click', ()=> removeFile(+btn.dataset.idx));
+    });
+  }
+
+  function removeFile(idx){
+    const f = importedFiles[idx];
+    if(!f) return;
+    if(!confirm(`Remove all points from "${f.name}"? This also resets your coordinate system setup, since point positions may shift.`)) return;
+    rawRows = rawRows.filter(r => r.__source !== f.name);
+    importedFiles.splice(idx,1);
+    renderFileChips();
+    if(rawRows.length === 0){
+      fullReset();
+    } else {
+      document.getElementById('rowCount').textContent = rawRows.length;
+      populateCpPicker();
+      renderPointTable();
+      updateDeploySummary();
+      resetGeoref(); // rowIndex references (control points, markers) are stale after filtering
+    }
   }
 
   function getPoints(){
@@ -992,10 +1222,21 @@
         id: mapping.id ? (row[mapping.id] ?? ('#'+(i+1))) : ('#'+(i+1)),
         desc: mapping.desc ? (row[mapping.desc] ?? '') : '',
         x, y, z: isNaN(z) ? null : z,
-        valid: !isNaN(x) && !isNaN(y)
+        valid: !isNaN(x) && !isNaN(y),
+        destroyed: !!row.__destroyed,
+        source: row.__source || ''
       };
     });
   }
+
+  function toggleDestroyed(rowIndex){
+    if(!rawRows[rowIndex]) return;
+    rawRows[rowIndex].__destroyed = !rawRows[rowIndex].__destroyed;
+    renderPointTable();
+    updateDeploySummary();
+    if((placementMode==='epsg' && epsgReady) || (placementMode==='controlPoints' && transform)) plotAllPoints();
+  }
+  window.__toggleDestroyed = toggleDestroyed;
 
   // ---------------- Control points ----------------
   function populateCpPicker(){
@@ -1003,7 +1244,7 @@
     const sel = document.getElementById('cpPointSelect');
     sel.innerHTML = '';
     points.forEach(p=>{
-      if(!p.valid) return;
+      if(!p.valid || p.destroyed) return;
       if(controlPoints.some(cp=>cp.rowIndex===p.rowIndex)) return;
       const o = document.createElement('option');
       o.value = p.rowIndex;
@@ -1337,12 +1578,14 @@
       if(!ll) return;
       const {lat, lon} = ll;
       const isCp = controlPoints.some(cp=>cp.rowIndex===p.rowIndex);
-      const marker = L.marker([lat,lon], {icon: surveyIcon(isCp ? '#c97b3d' : '#5b8c5a', false)})
+      const marker = L.marker([lat,lon], {icon: p.destroyed ? destroyedIcon() : surveyIcon(isCp ? '#c97b3d' : '#5b8c5a', false)})
         .bindPopup(
-          `<div class="popup-title">${escapeHtml(String(p.id))}</div>` +
+          `<div class="popup-title">${escapeHtml(String(p.id))}${p.destroyed ? ' <span style="color:#c0564a;">(destroyed)</span>' : ''}</div>` +
           (p.desc ? `<div class="popup-row">${escapeHtml(String(p.desc))}</div>` : '') +
           `<div class="popup-row">x: <b>${p.x}</b> &nbsp; y: <b>${p.y}</b>${p.z!=null ? ` &nbsp; z: <b>${p.z}</b>` : ''}</div>` +
-          `<div class="popup-row">lat: <b>${lat.toFixed(6)}</b> &nbsp; lon: <b>${lon.toFixed(6)}</b></div>`
+          `<div class="popup-row">lat: <b>${lat.toFixed(6)}</b> &nbsp; lon: <b>${lon.toFixed(6)}</b></div>` +
+          (p.source ? `<div class="popup-row" style="opacity:.7;">from ${escapeHtml(p.source)}</div>` : '') +
+          `<button onclick="window.__toggleDestroyed(${p.rowIndex})" style="margin-top:8px; width:100%; padding:5px 8px; font-size:11px; font-family:inherit; border-radius:4px; cursor:pointer; background:${p.destroyed ? '#5b8c5a' : '#c0564a'}; color:#fff; border:none;">${p.destroyed ? 'Restore point' : 'Flag as destroyed'}</button>`
         );
       marker.addTo(plottedLayer);
       marker._rowIndex = p.rowIndex;
@@ -1365,7 +1608,11 @@
     points.forEach(p=>{
       const tr = document.createElement('tr');
       const isCp = controlPoints.some(cp=>cp.rowIndex===p.rowIndex);
-      tr.innerHTML = `<td>${escapeHtml(String(p.id))}${isCp?'<span class="cp-tag">CP</span>':''}</td><td>${p.x}</td><td>${p.y}</td><td>${p.z!=null ? p.z : '—'}</td>`;
+      const idCell = p.destroyed
+        ? `<span style="text-decoration:line-through; opacity:.6;">${escapeHtml(String(p.id))}</span>`
+        : escapeHtml(String(p.id));
+      tr.innerHTML = `<td>${idCell}${isCp?'<span class="cp-tag">CP</span>':''}</td><td>${p.x}</td><td>${p.y}</td><td>${p.z!=null ? p.z : '—'}</td>`
+        + `<td><button class="pick-btn small" style="width:auto; height:auto; padding:3px 8px; font-size:10px; color:${p.destroyed?'#5b8c5a':'#c0564a'};" onclick="event.stopPropagation(); window.__toggleDestroyed(${p.rowIndex})">${p.destroyed ? 'Restore' : 'Flag destroyed'}</button></td>`;
       tr.addEventListener('click', ()=>{
         document.querySelectorAll('#pointTable tr').forEach(r=>r.classList.remove('selected'));
         tr.classList.add('selected');
@@ -1381,12 +1628,167 @@
 
   document.getElementById('clearAllBtn').addEventListener('click', fullReset);
 
+  function updateDeploySummary(){
+    const points = getPoints();
+    const active = points.filter(p=>p.valid && !p.destroyed).length;
+    const destroyed = points.filter(p=>p.destroyed).length;
+    document.getElementById('deploySummary').innerHTML =
+      `<b>${active}</b> active point${active===1?'':'s'} will be included` +
+      (destroyed ? `, <b>${destroyed}</b> destroyed point${destroyed===1?'':'s'} excluded.` : '.');
+    document.getElementById('section-deploy').style.display = points.length ? 'block' : 'none';
+  }
+
+  // Standard fixed format, same as import: no header, ID,X,Y,Z,Description.
+  // Destroyed points are deliberately left out — this file is meant to be
+  // the live, trustworthy control set (e.g. for Trimble Access), not an
+  // audit log.
+  function buildMasterCsvText(){
+    const points = getPoints().filter(p=>p.valid && !p.destroyed);
+    const esc = (v)=>{
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+    };
+    return points.map(p => [esc(p.id), esc(p.x), esc(p.y), esc(p.z!=null?p.z:''), esc(p.desc)].join(',')).join('\r\n') + '\r\n';
+  }
+
+  // ---------------- Deploy: folder browser + upload + tag ----------------
+  let folderPath = []; // [{id, name}]
+  let currentFolderItems = [];
+
+  document.getElementById('deployBtn').addEventListener('click', openFolderModal);
+  document.getElementById('folderModalClose').addEventListener('click', ()=>{
+    document.getElementById('folderModal').style.display = 'none';
+  });
+
+  async function openFolderModal(){
+    if(!tcOuterApi || !tcAccessToken || !tcProject){
+      alert('Not connected to Trimble Connect — deploying requires running inside a project.');
+      return;
+    }
+    document.getElementById('folderModal').style.display = 'flex';
+    folderPath = [{ id: null, name: tcProject.name || 'Project root' }]; // id resolved on first load
+    await loadFolder(null);
+  }
+
+  async function loadFolder(folderId){
+    const statusEl = document.getElementById('folderModalStatus');
+    statusEl.className = 'status-line warn';
+    statusEl.innerHTML = '<span class="dot"></span><span>Loading…</span>';
+    document.getElementById('folderList').innerHTML = '';
+
+    try{
+      const qs = new URLSearchParams({ projectId: tcProject.id });
+      if(folderId) qs.set('folderId', folderId);
+      const res = await fetch(`/api/list-folder?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${tcAccessToken}` }
+      });
+      if(!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+
+      // Resolve the root placeholder id in the breadcrumb the first time.
+      if(folderPath.length && folderPath[folderPath.length-1].id === null){
+        folderPath[folderPath.length-1].id = data.folderId;
+      }
+
+      currentFolderItems = data.items;
+      renderFolderBreadcrumb();
+      renderFolderList();
+      const folderCount = data.items.filter(i=>i.type==='FOLDER').length;
+      const fileCount = data.items.filter(i=>i.type==='FILE').length;
+      statusEl.className = 'status-line ok';
+      statusEl.innerHTML = `<span class="dot"></span><span>${folderCount} folder${folderCount===1?'':'s'}, ${fileCount} file${fileCount===1?'':'s'}</span>`;
+    }catch(e){
+      statusEl.className = 'status-line err';
+      statusEl.innerHTML = `<span class="dot"></span><span>Couldn't load folder (${escapeHtml(e.message)})</span>`;
+    }
+  }
+
+  function renderFolderBreadcrumb(){
+    const el = document.getElementById('folderBreadcrumb');
+    el.innerHTML = folderPath.map((f,i)=>
+      `<span class="folder-crumb" data-idx="${i}">${escapeHtml(f.name)}</span>`
+    ).join(' <span style="opacity:.4;">/</span> ');
+    el.querySelectorAll('.folder-crumb').forEach(crumb=>{
+      crumb.addEventListener('click', ()=>{
+        const idx = +crumb.dataset.idx;
+        folderPath = folderPath.slice(0, idx+1);
+        loadFolder(folderPath[folderPath.length-1].id);
+      });
+    });
+  }
+
+  function renderFolderList(){
+    const el = document.getElementById('folderList');
+    el.innerHTML = currentFolderItems.map(item=>`
+      <div class="folder-item ${item.type==='FILE'?'file':''}" data-id="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}" data-type="${item.type}">
+        <span class="icon">${item.type==='FOLDER' ? '📁' : '📄'}</span>
+        <span>${escapeHtml(item.name)}</span>
+      </div>`).join('') || '<p class="hint">Nothing in this folder.</p>';
+
+    el.querySelectorAll('.folder-item').forEach(div=>{
+      if(div.dataset.type !== 'FOLDER') return;
+      div.addEventListener('click', ()=>{
+        folderPath.push({ id: div.dataset.id, name: div.dataset.name });
+        loadFolder(div.dataset.id);
+      });
+    });
+  }
+
+  document.getElementById('folderUseHereBtn').addEventListener('click', ()=>{
+    const target = folderPath[folderPath.length-1];
+    document.getElementById('folderModal').style.display = 'none';
+    deployMasterCsv(target.id);
+  });
+
+  async function deployMasterCsv(folderId){
+    const statusEl = document.getElementById('deployStatus');
+    statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Uploading master_control.csv…</span></div>`;
+
+    const csvText = buildMasterCsvText();
+
+    try{
+      const uploadRes = await fetch('/api/upload-file', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tcAccessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: tcProject.id,
+          parentId: folderId,
+          parentType: 'FOLDER',
+          fileName: 'master_control.csv',
+          content: csvText
+        })
+      });
+      if(!uploadRes.ok) throw new Error(`Upload failed: HTTP ${uploadRes.status}: ${await uploadRes.text()}`);
+      const uploadData = await uploadRes.json();
+      const fileId = uploadData.file && uploadData.file.id;
+      if(!fileId) throw new Error('Upload succeeded but no file id came back — check the raw response.');
+
+      statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Tagging file as TrimbleAccess.ProjectFile…</span></div>`;
+
+      const tagRes = await fetch('/api/tag-file', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tcAccessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: tcProject.id, fileId })
+      });
+      if(!tagRes.ok) throw new Error(`Tagging failed: HTTP ${tagRes.status}: ${await tagRes.text()}`);
+
+      statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
+        `Deployed and tagged. <b>One manual step left:</b> in Trimble Connect's Explorer, select master_control.csv → the ⋮ menu → <b>Checkout File(s)</b> to lock it against overwrites — that action isn't available through the API, only the Connect UI itself.` +
+        `</span></div>`;
+    }catch(e){
+      statusEl.innerHTML = `<div class="status-line err"><span class="dot"></span><span>${escapeHtml(e.message)}</span></div>`;
+    }
+  }
+
   function fullReset(){
     rawRows = []; headers = []; mapping = {id:null,x:null,y:null,z:null,desc:null};
+    importedFiles = [];
     document.getElementById('fileChipHolder').innerHTML = '';
     document.getElementById('rowCountHint').style.display = 'none';
     document.getElementById('section-crs').style.display = 'none';
     document.getElementById('section-points').style.display = 'none';
+    document.getElementById('section-deploy').style.display = 'none';
+    document.getElementById('deployStatus').innerHTML = '';
     fileInput.value = '';
     resetGeoref();
   }
