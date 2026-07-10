@@ -27,39 +27,51 @@ const CORS_HEADERS = {
 // signed pointer URL to fetch (the pattern Trimble's thumbnailUrl field
 // confirmed is real for this API). Returns the final text content, or null
 // if this body doesn't look usable either way.
-async function resolveContent(bodyText, auth) {
-  try {
-    const parsed = JSON.parse(bodyText);
+async function resolveContent(bodyBuffer, auth) {
+  // Try to see if this looks like a JSON pointer wrapper (e.g. {"url":"..."})
+  // without assuming the bytes are valid UTF-8 text — binary file content
+  // (like a .12daz zip) would get corrupted if blindly decoded, so we only
+  // attempt JSON parsing, and only trust it, when it actually looks like
+  // JSON text first.
+  let asText = null;
+  try { asText = new TextDecoder('utf-8', { fatal: false }).decode(bodyBuffer); } catch { asText = null; }
 
-    // NOTE: thumbnailUrl is deliberately NOT checked here — it always points
-    // to a generic file-type icon graphic (confirmed: we got back an Adobe
-    // Illustrator SVG for a CSV file), never the actual file content.
-    const pointerFrom = (obj) => obj && (obj.url || obj.downloadUrl || obj.data);
+  if (asText) {
+    const trimmed = asText.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const pointerFrom = (obj) => obj && (obj.url || obj.downloadUrl || obj.data);
 
-    // Array response (e.g. a versions list) — check entries newest-first.
-    if (Array.isArray(parsed)) {
-      for (let i = parsed.length - 1; i >= 0; i--) {
-        const innerUrl = pointerFrom(parsed[i]);
+        if (Array.isArray(parsed)) {
+          for (let i = parsed.length - 1; i >= 0; i--) {
+            const innerUrl = pointerFrom(parsed[i]);
+            if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
+              const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
+              if (innerRes.ok) return await innerRes.arrayBuffer();
+            }
+          }
+          return null;
+        }
+
+        const innerUrl = pointerFrom(parsed);
         if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
           const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
-          if (innerRes.ok) return await innerRes.text();
+          if (innerRes.ok) return await innerRes.arrayBuffer();
         }
+        return null; // parsed as JSON but no usable pointer in it
+      } catch {
+        // Looked JSON-shaped but didn't actually parse — fall through to
+        // treating the original bytes as real content below.
       }
-      return null;
     }
-
-    const innerUrl = pointerFrom(parsed);
-    if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
-      const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
-      if (innerRes.ok) return await innerRes.text();
-    }
-    return null; // parsed as JSON but no usable pointer in it
-  } catch {
-    // Not JSON at all — if it looks like CSV-ish text (has commas/newlines
-    // and isn't an HTML error page), treat it as the content directly.
-    if (bodyText && !bodyText.trim().startsWith('<')) return bodyText;
-    return null;
+    if (trimmed.startsWith('<')) return null; // an HTML error page, not real content
   }
+
+  // Not JSON, not HTML — treat the ORIGINAL bytes as the actual file
+  // content directly. Covers plain CSV responses as well as any binary
+  // format (like .12daz) a candidate path might hand back as-is.
+  return bodyBuffer;
 }
 
 // Generic same-origin proxy for fetching a URL that lacks CORS headers —
@@ -464,15 +476,16 @@ async function handleDownload(request, url) {
             attempts.push(`${path} -> ${candRes.status} ${errBody.slice(0, 200)}`);
             continue;
           }
-          const bodyText = await candRes.text();
-          const result = await resolveContent(bodyText, auth);
+          const bodyBuffer = await candRes.arrayBuffer();
+          const result = await resolveContent(bodyBuffer, auth);
           if (result) {
             return new Response(result, {
               status: 200,
-              headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
+              headers: { ...CORS_HEADERS, 'Content-Type': 'application/octet-stream' }
             });
           }
-          attempts.push(`${path} -> 200 but not usable content/pointer: ${bodyText.slice(0, 600)}`);
+          const preview = new TextDecoder('utf-8', { fatal: false }).decode(bodyBuffer).slice(0, 600);
+          attempts.push(`${path} -> 200 but not usable content/pointer: ${preview}`);
         } catch (e) {
           attempts.push(`${path} -> network error: ${e}`);
         }
@@ -489,10 +502,10 @@ async function handleDownload(request, url) {
       if (downloadUrl) {
         const fileRes = await fetch(downloadUrl, { headers: { Authorization: auth } });
         if (fileRes.ok) {
-          const text = await fileRes.text();
-          return new Response(text, {
+          const buf = await fileRes.arrayBuffer();
+          return new Response(buf, {
             status: 200,
-            headers: { ...CORS_HEADERS, 'Content-Type': 'text/csv; charset=utf-8' }
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/octet-stream' }
           });
         }
         lastStatus = `metadata ok, but downloadUrl fetch failed: ${fileRes.status}`;
