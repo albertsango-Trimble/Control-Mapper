@@ -1109,6 +1109,8 @@
     else finishImport(isFirstImport);
   }
 
+  let suppressGeorefResetOnNextImport = false; // set true right before the post-deploy master_control.csv reimport
+
   function finishImport(isFirstImport){
     document.getElementById('rowCount').textContent = rawRows.length;
     document.getElementById('rowCountHint').style.display = 'block';
@@ -1117,7 +1119,11 @@
     populateCpPicker();
     renderPointTable();
     updateDeploySummary();
-    if(isFirstImport){
+
+    const shouldResetGeoref = isFirstImport && !suppressGeorefResetOnNextImport;
+    suppressGeorefResetOnNextImport = false;
+
+    if(shouldResetGeoref){
       resetGeoref();
     } else if((placementMode==='epsg' && epsgReady) || (placementMode==='controlPoints' && transform)){
       plotAllPoints();
@@ -1811,12 +1817,41 @@
       });
       if(!tagRes.ok) throw new Error(`Tagging failed: HTTP ${tagRes.status}: ${await tagRes.text()}`);
 
+      // Reset the working point set and reload it from exactly what we
+      // just deployed — so the app reflects the new canonical
+      // master_control.csv rather than whatever mix of files/destroyed
+      // points led up to this deploy. The coordinate system setup
+      // (EPSG/control points) is deliberately left alone so the
+      // reimported points plot immediately without redoing that step.
+      clearPointsKeepGeoref();
+      suppressGeorefResetOnNextImport = true;
+      ingestCsvText(csvText, 'master_control.csv');
+
       statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
-        `Deployed and tagged. <b>One manual step left:</b> in Trimble Connect's Explorer, select master_control.csv → the ⋮ menu → <b>Checkout File(s)</b> to lock it against overwrites — that action isn't available through the API, only the Connect UI itself.` +
+        `Deployed and tagged — "01 Import CSV" now reflects the new master_control.csv. <b>One manual step left:</b> in Trimble Connect's Explorer, select master_control.csv → the ⋮ menu → <b>Checkout File(s)</b> to lock it against overwrites — that action isn't available through the API, only the Connect UI itself.` +
         `</span></div>`;
     }catch(e){
       statusEl.innerHTML = `<div class="status-line err"><span class="dot"></span><span>${escapeHtml(e.message)}</span></div>`;
     }
+  }
+
+  // Like fullReset, but deliberately leaves the coordinate system setup
+  // (EPSG code / control points / transform) untouched — used right after
+  // a successful deploy, where we want to reload the point set from the
+  // freshly-deployed master_control.csv without making the user redo
+  // georeferencing.
+  function clearPointsKeepGeoref(){
+    rawRows = []; headers = []; mapping = {id:null,x:null,y:null,z:null,desc:null};
+    importedFiles = [];
+    document.getElementById('fileChipHolder').innerHTML = '';
+    document.getElementById('rowCountHint').style.display = 'none';
+    document.getElementById('section-points').style.display = 'none';
+    document.getElementById('section-deploy').style.display = 'none';
+    document.getElementById('deployStatus').innerHTML = '';
+    if(plottedLayer){ map.removeLayer(plottedLayer); plottedLayer = null; }
+    plottedMarkers = [];
+    document.getElementById('ptCount').textContent = 'no points plotted';
+    document.getElementById('colorLegend').style.display = 'none';
   }
 
   function fullReset(){
