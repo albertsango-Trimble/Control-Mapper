@@ -104,6 +104,182 @@ async function handleProxyFetch(url) {
   }
 }
 
+// Finds which regional host actually serves this project, and returns the
+// project's own metadata alongside it (rootId is needed for the folder
+// browser; name is just for display). Reused by all three new endpoints
+// below so every call in one deploy operation lands on the same host.
+async function discoverHost(auth, projectId) {
+  for (const host of CANDIDATE_HOSTS) {
+    try {
+      const res = await fetch(`${host}/tc/api/2.0/projects/${encodeURIComponent(projectId)}`, {
+        headers: { Authorization: auth }
+      });
+      if (res.ok) return { host, project: await res.json() };
+    } catch { /* try next host */ }
+  }
+  return null;
+}
+
+async function handleListFolder(request, url) {
+  const auth = request.headers.get('Authorization');
+  const projectId = url.searchParams.get('projectId');
+  const folderId = url.searchParams.get('folderId'); // optional — defaults to project root
+
+  if (!auth) return new Response('Missing Authorization header', { status: 401, headers: CORS_HEADERS });
+  if (!projectId) return new Response('Missing projectId', { status: 400, headers: CORS_HEADERS });
+
+  const discovered = await discoverHost(auth, projectId);
+  if (!discovered) {
+    return new Response('Could not reach any known Trimble region host for this project', { status: 502, headers: CORS_HEADERS });
+  }
+  const { host, project } = discovered;
+  const targetFolderId = folderId || project.rootId;
+
+  try {
+    const res = await fetch(`${host}/tc/api/2.0/folders/${encodeURIComponent(targetFolderId)}/items`, {
+      headers: { Authorization: auth }
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return new Response(`Could not list folder: HTTP ${res.status} ${body}`, { status: 502, headers: CORS_HEADERS });
+    }
+    const items = await res.json();
+    const payload = {
+      host,
+      folderId: targetFolderId,
+      rootId: project.rootId,
+      isRoot: targetFolderId === project.rootId,
+      items: (Array.isArray(items) ? items : [])
+        .filter(i => i.type === 'FOLDER' || i.type === 'FILE')
+        .map(i => ({ id: i.id, name: i.name, type: i.type }))
+    };
+    return new Response(JSON.stringify(payload), {
+      status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response(`Fetch failed: ${e}`, { status: 502, headers: CORS_HEADERS });
+  }
+}
+
+async function handleUploadFile(request) {
+  const auth = request.headers.get('Authorization');
+  if (!auth) return new Response('Missing Authorization header', { status: 401, headers: CORS_HEADERS });
+
+  let body;
+  try { body = await request.json(); } catch { return new Response('Invalid JSON body', { status: 400, headers: CORS_HEADERS }); }
+
+  const { projectId, parentId, parentType, fileName, content } = body || {};
+  if (!projectId || !parentId || !fileName || content == null) {
+    return new Response('Missing projectId, parentId, fileName, or content', { status: 400, headers: CORS_HEADERS });
+  }
+
+  const discovered = await discoverHost(auth, projectId);
+  if (!discovered) {
+    return new Response('Could not reach any known Trimble region host for this project', { status: 502, headers: CORS_HEADERS });
+  }
+  const { host } = discovered;
+
+  try {
+    // Step 1: initiate — tells Trimble Connect a file is coming and gets
+    // back a short-lived signed URL to PUT the actual bytes to.
+    const initiateRes = await fetch(`${host}/tc/api/2.0/files/fs/initiate`, {
+      method: 'POST',
+      headers: { Authorization: auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId, parentType: parentType || 'FOLDER', name: fileName })
+    });
+    if (!initiateRes.ok) {
+      const t = await initiateRes.text().catch(() => '');
+      return new Response(`initiate failed: HTTP ${initiateRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
+    }
+    const initiateData = await initiateRes.json();
+
+    // Step 2: PUT the raw bytes directly to that signed URL (not Trimble's
+    // API host — this is typically direct-to-blob-storage, so no auth
+    // header here).
+    const putRes = await fetch(initiateData.uploadURL, { method: 'PUT', body: content });
+    if (!putRes.ok) {
+      const t = await putRes.text().catch(() => '');
+      return new Response(`upload PUT failed: HTTP ${putRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
+    }
+
+    // Step 3: commit — finalizes the upload into an actual file record.
+    const commitRes = await fetch(`${host}/tc/api/2.0/files/fs/commit`, {
+      method: 'POST',
+      headers: { Authorization: auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId: initiateData.uploadId })
+    });
+    if (!commitRes.ok) {
+      const t = await commitRes.text().catch(() => '');
+      return new Response(`commit failed: HTTP ${commitRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
+    }
+    const fileEntry = await commitRes.json();
+
+    return new Response(JSON.stringify({ host, file: fileEntry }), {
+      status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response(`Upload failed: ${e}`, { status: 502, headers: CORS_HEADERS });
+  }
+}
+
+async function handleTagFile(request) {
+  const auth = request.headers.get('Authorization');
+  if (!auth) return new Response('Missing Authorization header', { status: 401, headers: CORS_HEADERS });
+
+  let body;
+  try { body = await request.json(); } catch { return new Response('Invalid JSON body', { status: 400, headers: CORS_HEADERS }); }
+  const { projectId, fileId } = body || {};
+  if (!projectId || !fileId) return new Response('Missing projectId or fileId', { status: 400, headers: CORS_HEADERS });
+
+  const discovered = await discoverHost(auth, projectId);
+  if (!discovered) {
+    return new Response('Could not reach any known Trimble region host for this project', { status: 502, headers: CORS_HEADERS });
+  }
+  const { host } = discovered;
+  const TAG_LABEL = 'TrimbleAccess.ProjectFile';
+
+  try {
+    const listRes = await fetch(`${host}/tc/api/2.0/tags?projectId=${encodeURIComponent(projectId)}`, {
+      headers: { Authorization: auth }
+    });
+    if (!listRes.ok) {
+      const t = await listRes.text().catch(() => '');
+      return new Response(`Could not list tags: HTTP ${listRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
+    }
+    const tags = await listRes.json();
+    let tag = Array.isArray(tags) ? tags.find(t => t.label === TAG_LABEL) : null;
+
+    if (!tag) {
+      const createRes = await fetch(`${host}/tc/api/2.0/tags`, {
+        method: 'POST',
+        headers: { Authorization: auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: TAG_LABEL, projectId })
+      });
+      if (!createRes.ok) {
+        const t = await createRes.text().catch(() => '');
+        return new Response(`Could not create tag: HTTP ${createRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
+      }
+      tag = await createRes.json();
+    }
+
+    const attachRes = await fetch(`${host}/tc/api/2.0/tags/${encodeURIComponent(tag.id)}/objects`, {
+      method: 'POST',
+      headers: { Authorization: auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ id: fileId, objectType: 'FILE' }])
+    });
+    if (!attachRes.ok) {
+      const t = await attachRes.text().catch(() => '');
+      return new Response(`Could not attach tag to file: HTTP ${attachRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
+    }
+
+    return new Response(JSON.stringify({ tagId: tag.id, applied: true }), {
+      status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+    });
+  } catch (e) {
+    return new Response(`Tagging failed: ${e}`, { status: 502, headers: CORS_HEADERS });
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -123,6 +299,33 @@ export default {
       }
       if (request.method === 'GET') {
         return handleProxyFetch(url);
+      }
+    }
+
+    if (url.pathname === '/api/list-folder') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+      if (request.method === 'GET') {
+        return handleListFolder(request, url);
+      }
+    }
+
+    if (url.pathname === '/api/upload-file') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+      if (request.method === 'POST') {
+        return handleUploadFile(request);
+      }
+    }
+
+    if (url.pathname === '/api/tag-file') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+      if (request.method === 'POST') {
+        return handleTagFile(request);
       }
     }
 
