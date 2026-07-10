@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -496,13 +497,13 @@
 
       <!-- 1. Upload -->
       <div class="section" id="section-upload">
-        <p class="section-label collapsible" data-target="section-upload"><span class="num">01</span> Import CSV<span class="chevron">▾</span></p>
+        <p class="section-label collapsible" data-target="section-upload"><span class="num">01</span> Import<span class="chevron">▾</span></p>
         <div id="drop">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.6"><path d="M12 3v12m0-12l-4 4m4-4l4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-          <div class="t1">Drop CSV, or click to browse</div>
-          <div class="t2">no header row — columns: ID, X, Y, Z, Description</div>
+          <div class="t1">Drop a file, or click to browse</div>
+          <div class="t2">CSV (ID, X, Y, Z, Description) or 12d 12DA/12DAZ</div>
         </div>
-        <input type="file" id="fileInput" accept=".csv,text/csv" />
+        <input type="file" id="fileInput" accept=".csv,text/csv,.12da,.12daz" />
         <button class="btn full small" id="browseConnectBtn" style="margin-top:8px;" disabled>◎ Browse from Trimble Connect…</button>
         <div id="fileChipHolder" style="margin-top:10px;"></div>
         <div class="hint" id="rowCountHint" style="display:none;"><b><span id="rowCount">0</span> points</b> parsed from file.</div>
@@ -575,6 +576,10 @@
         <p class="hint" id="deploySummary" style="margin-bottom:10px;"></p>
         <button class="btn primary full small" id="deployBtn">Deploy as master_control.csv…</button>
         <button class="btn full small" id="versionHistoryBtn" style="margin-top:8px;" disabled title="Deploy at least once first">Version history…</button>
+        <div class="col-grid" style="margin-top:8px;">
+          <button class="btn small" id="export12daBtn">Export .12da</button>
+          <button class="btn small" id="export12dazBtn">Export .12daz</button>
+        </div>
         <div id="deployStatus"></div>
         <div id="previewBanner" class="status-line warn" style="display:none; margin-top:10px;">
           <span class="dot"></span>
@@ -649,7 +654,7 @@
   <div id="connectModal" class="modal-overlay" style="display:none;">
     <div class="modal-box">
       <div class="modal-head">
-        <span>Select a CSV from this project</span>
+        <span>Select a CSV or 12DA/12DAZ file from this project</span>
         <button id="connectModalClose" class="pick-btn" title="Close">✕</button>
       </div>
       <div id="connectModalStatus" class="status-line warn"><span class="dot"></span><span>Connecting to Trimble Connect…</span></div>
@@ -1115,13 +1120,236 @@
   });
 
   function handleFile(file){
-    file.text().then(text => processCsvText(text, file.name)).catch(err=>{
-      alert('Could not read that file: ' + err.message);
-    });
+    const lower = file.name.toLowerCase();
+    if(lower.endsWith('.12daz')){
+      file.arrayBuffer().then(buf => ingest12dazBuffer(buf, file.name)).catch(err=>{
+        alert('Could not read that file: ' + err.message);
+      });
+    } else if(lower.endsWith('.12da')){
+      file.arrayBuffer().then(buf => ingest12daBuffer(buf, file.name)).catch(err=>{
+        alert('Could not read that file: ' + err.message);
+      });
+    } else {
+      file.text().then(text => processCsvText(text, file.name)).catch(err=>{
+        alert('Could not read that file: ' + err.message);
+      });
+    }
   }
 
   function ingestCsvText(text, name){
     processCsvText(text, name);
+  }
+
+  // ---------------- 12d Model 12DA / 12DAZ support ----------------
+  // 12DAZ is just a ZIP archive containing one or more .12da files —
+  // confirmed directly from Trimble's own field-systems docs and multiple
+  // independent sources, not a guess.
+  //
+  // 12DA itself is 12d Model's full ASCII interchange format (strings,
+  // tins, alignments, drainage networks, plot frames) — far broader than
+  // points. This extension only cares about points, so the parser below
+  // deliberately targets the documented convention for representing a
+  // single survey point: a "2d"/"3d"/"4d" string containing exactly ONE
+  // vertex (Trimble's own docs: "Point strings are read in as points").
+  // Anything with more than one vertex is real line/surface geometry and
+  // gets skipped, not misread as a point.
+  //
+  // Also handles a real gotcha found while researching this: newer 12da
+  // exports can be UTF-16LE encoded rather than UTF-8, which would
+  // silently corrupt parsing if read as plain text without checking.
+
+  function decodeBytes(bytes){
+    if(bytes.length>=2 && bytes[0]===0xFF && bytes[1]===0xFE) return new TextDecoder('utf-16le').decode(bytes.slice(2));
+    if(bytes.length>=2 && bytes[0]===0xFE && bytes[1]===0xFF) return new TextDecoder('utf-16be').decode(bytes.slice(2));
+    if(bytes.length>=3 && bytes[0]===0xEF && bytes[1]===0xBB && bytes[2]===0xBF) return new TextDecoder('utf-8').decode(bytes.slice(3));
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  function stripComments12da(text){
+    const lines = text.split(/\r\n|\r|\n/);
+    return lines.map(line=>{
+      let inQuotes = false;
+      for(let i=0; i<line.length-1; i++){
+        if(line[i]==='"' && line[i-1]!=='\\') inQuotes = !inQuotes;
+        if(!inQuotes && line[i]==='/' && line[i+1]==='/') return line.slice(0,i);
+      }
+      return line;
+    }).join('\n');
+  }
+
+  function tokenize12da(text){
+    const re = /"(?:\\.|[^"\\])*"|\{|\}|[^\s{}]+/g;
+    const tokens = [];
+    let m;
+    while((m = re.exec(text)) !== null){
+      let t = m[0];
+      if(t.startsWith('"') && t.endsWith('"')){
+        t = { type:'string', value: t.slice(1,-1).replace(/\\"/g,'"').replace(/\\\\/g,'\\') };
+      } else if(t==='{' || t==='}'){
+        t = { type:'brace', value:t };
+      } else {
+        t = { type:'word', value:t };
+      }
+      tokens.push(t);
+    }
+    return tokens;
+  }
+
+  function extractBlock12da(tokens, openIdx){
+    let depth = 0;
+    for(let i=openIdx; i<tokens.length; i++){
+      if(tokens[i].type==='brace' && tokens[i].value==='{') depth++;
+      if(tokens[i].type==='brace' && tokens[i].value==='}'){
+        depth--;
+        if(depth===0) return { content: tokens.slice(openIdx+1, i), endIdx: i };
+      }
+    }
+    return { content: tokens.slice(openIdx+1), endIdx: tokens.length-1 };
+  }
+
+  function isNumberTok12da(tok){
+    return tok && tok.type==='word' && !isNaN(parseFloat(tok.value)) && isFinite(tok.value);
+  }
+
+  function parse12da(text){
+    const stripped = stripComments12da(text);
+    const tokens = tokenize12da(stripped);
+    const points = [];
+    const skipped = [];
+    let autoIdCounter = 1;
+
+    for(let i=0; i<tokens.length; i++){
+      if(tokens[i].type==='word' && tokens[i].value.toLowerCase()==='string'){
+        const typeTok = tokens[i+1];
+        const type = typeTok ? typeTok.value.toLowerCase() : '';
+        const braceIdx = i+2;
+        if(!tokens[braceIdx] || tokens[braceIdx].value !== '{') continue;
+        const { content, endIdx } = extractBlock12da(tokens, braceIdx);
+
+        if(['2d','3d','4d'].includes(type)){
+          let name = null;
+          for(let j=0; j<content.length-1; j++){
+            if(content[j].type==='word' && content[j].value.toLowerCase()==='name'){ name = content[j+1].value; break; }
+          }
+          let dataContent = null;
+          for(let j=0; j<content.length; j++){
+            if(content[j].type==='word' && content[j].value.toLowerCase()==='data' && content[j+1] && content[j+1].value==='{'){
+              dataContent = extractBlock12da(content, j+1).content;
+              break;
+            }
+          }
+          // A description can come from an attributes { text description "..." }
+          // block (what our own exporter writes for 2d/3d strings) or, for 4d
+          // strings, the text embedded directly in the data row.
+          let attrDesc = '';
+          for(let j=0; j<content.length; j++){
+            if(content[j].type==='word' && content[j].value.toLowerCase()==='attributes' && content[j+1] && content[j+1].value==='{'){
+              const attrContent = extractBlock12da(content, j+1).content;
+              for(let k=0; k<attrContent.length-2; k++){
+                if(attrContent[k].type==='word' && attrContent[k].value.toLowerCase()==='text'){
+                  const attrName = attrContent[k+1].value.toLowerCase();
+                  if(attrName === 'description' || attrName === 'desc'){
+                    attrDesc = attrContent[k+2].value;
+                    break;
+                  }
+                }
+              }
+              break;
+            }
+          }
+          if(dataContent){
+            const need = type==='2d' ? 2 : 3;
+            const numericTokens = dataContent.filter(isNumberTok12da);
+            const vertexCount = numericTokens.length / need;
+            if(Number.isInteger(vertexCount) && vertexCount===1){
+              const x = parseFloat(numericTokens[0].value);
+              const y = parseFloat(numericTokens[1].value);
+              const z = need===3 ? parseFloat(numericTokens[2].value) : null;
+              let desc = attrDesc;
+              if(!desc && type==='4d'){
+                const textTok = dataContent.find(t=>t.type==='string');
+                desc = textTok ? textTok.value : '';
+              }
+              points.push({ id: name || `P${autoIdCounter++}`, x, y, z, desc });
+            } else {
+              skipped.push({ name, type, vertexCount });
+            }
+          }
+        } else if(type==='text'){
+          const getVal = (key)=>{
+            for(let j=0; j<content.length-1; j++){
+              if(content[j].type==='word' && content[j].value.toLowerCase()===key) return content[j+1].value;
+            }
+            return null;
+          };
+          const x = parseFloat(getVal('x'));
+          const y = parseFloat(getVal('y'));
+          const zRaw = getVal('z');
+          const z = zRaw !== null ? parseFloat(zRaw) : null;
+          const name = getVal('name');
+          let textVal = '';
+          for(let j=0; j<content.length-1; j++){
+            if(content[j].type==='word' && content[j].value.toLowerCase()==='text'){ textVal = content[j+1].value; break; }
+          }
+          if(!isNaN(x) && !isNaN(y)){
+            points.push({ id: name || `P${autoIdCounter++}`, x, y, z, desc: textVal });
+          }
+        } else {
+          skipped.push({ type, reason:'not a point-eligible string type (line/surface/alignment/etc.)' });
+        }
+
+        i = endIdx;
+      }
+    }
+
+    return { points, skipped };
+  }
+
+  function ingest12daText(text, name){
+    const { points, skipped } = parse12da(text);
+    if(!points.length){
+      alert(`No point data found in "${name}" — it may only contain lines, surfaces, or alignments, which this tool doesn't read.`);
+      return;
+    }
+    const synthHeaders = ['Column 1','Column 2','Column 3','Column 4','Column 5'];
+    const rows = points.map(p=>({
+      'Column 1': p.id,
+      'Column 2': p.x,
+      'Column 3': p.y,
+      'Column 4': p.z != null ? p.z : '',
+      'Column 5': p.desc || ''
+    }));
+    mergeRows(synthHeaders, rows, name);
+    if(skipped.length){
+      console.warn(`[Control Mapper] Skipped ${skipped.length} non-point string(s) in "${name}" (lines/surfaces, not points):`, skipped);
+    }
+  }
+
+  function ingest12daBuffer(buf, name){
+    try{
+      const text = decodeBytes(new Uint8Array(buf));
+      ingest12daText(text, name);
+    }catch(e){
+      alert('Could not read that 12DA file: ' + e.message);
+    }
+  }
+
+  async function ingest12dazBuffer(buf, name){
+    try{
+      const zip = await JSZip.loadAsync(buf);
+      const entries = Object.values(zip.files).filter(f => !f.dir && /\.12da$/i.test(f.name));
+      if(!entries.length){
+        alert('No .12da file found inside that .12daz archive.');
+        return;
+      }
+      for(const entry of entries){
+        const bytes = await entry.async('uint8array');
+        const text = decodeBytes(bytes);
+        ingest12daText(text, entry.name);
+      }
+    }catch(e){
+      alert('Could not read that 12DAZ file: ' + e.message);
+    }
   }
 
   // Fixed format for every CSV this extension accepts: no header row,
@@ -1782,6 +2010,53 @@
     return points.map(p => [esc(p.id), esc(p.x), esc(p.y), esc(p.z!=null?p.z:''), esc(p.desc)].join(',')).join('\r\n') + '\r\n';
   }
 
+  // Writes each point as a single-vertex 3d string — the documented 12d
+  // convention for a standalone survey point (verified against 12d's own
+  // ASCII format spec). Descriptions go in a text attribute rather than a
+  // 4d string, since that avoids needing the extra display/justify fields
+  // a 4d (annotated) string expects.
+  function build12daText(){
+    const points = getPoints().filter(p=>p.valid && !p.destroyed);
+    const q = (s) => `"${String(s ?? '').replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"`;
+    const lines = ['// Exported from Control Mapper', ''];
+    points.forEach(p=>{
+      lines.push('string 3d {');
+      lines.push(`model "Control Mapper" name ${q(p.id)}`);
+      if(p.desc){
+        lines.push('attributes {');
+        lines.push(`text description ${q(p.desc)}`);
+        lines.push('}');
+      }
+      lines.push('data {');
+      lines.push(` ${p.x} ${p.y} ${p.z != null ? p.z : 0}`);
+      lines.push('}');
+      lines.push('}');
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+
+  function downloadBlob(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  }
+
+  document.getElementById('export12daBtn').addEventListener('click', ()=>{
+    const text = build12daText();
+    downloadBlob(new Blob([text], {type:'text/plain'}), 'control_points.12da');
+  });
+
+  document.getElementById('export12dazBtn').addEventListener('click', async ()=>{
+    const text = build12daText();
+    const zip = new JSZip();
+    zip.file('control_points.12da', text);
+    const blob = await zip.generateAsync({type:'blob'});
+    downloadBlob(blob, 'control_points.12daz');
+  });
+
   // ---------------- Deploy: folder browser + upload + tag ----------------
   let folderPath = []; // [{id, name}]
   let currentFolderItems = [];
@@ -2376,7 +2651,7 @@
     if(!data || typeof data !== 'object') return null;
     const items = Array.isArray(data) ? data : (Array.isArray(data.data) ? data.data : [data]);
     for(const item of items){
-      if(item && item.id && typeof item.name === 'string' && /\.csv$/i.test(item.name)){
+      if(item && item.id && typeof item.name === 'string' && /\.(csv|12da|12daz)$/i.test(item.name)){
         return item;
       }
     }
@@ -2385,7 +2660,7 @@
 
   document.getElementById('loadByIdBtn').addEventListener('click', ()=>{
     const id = document.getElementById('manualFileId').value.trim();
-    if(id) loadConnectFile(id, id + '.csv');
+    if(id) loadConnectFile(id, id); // real filename/extension unknown here — loadConnectFile sniffs content instead
   });
 
   async function loadConnectFile(fileId, name, versionId){
@@ -2401,12 +2676,33 @@
         headers: { Authorization: `Bearer ${tcAccessToken}` }
       });
       if(!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-      const text = await res.text();
-      ingestCsvText(text, name);
+      const buf = await res.arrayBuffer();
+      await routeDownloadedBuffer(buf, name);
       closeConnectBrowser();
     }catch(e){
-      setModalStatus('err', `Couldn't download that file (${e.message}). Double check the file ID, or that it's a CSV in this project.`);
+      setModalStatus('err', `Couldn't download that file (${e.message}). Double check the file ID, or that it's a CSV/12DA/12DAZ in this project.`);
     }
+  }
+
+  // Figures out how to ingest a downloaded buffer, preferring the known
+  // filename's extension but falling back to sniffing the actual bytes —
+  // needed because the "Load by ID" manual fallback doesn't know the real
+  // filename/extension at all.
+  async function routeDownloadedBuffer(buf, name){
+    const lower = (name || '').toLowerCase();
+    if(lower.endsWith('.12daz')) return ingest12dazBuffer(buf, name);
+    if(lower.endsWith('.12da')) return ingest12daBuffer(buf, name);
+    if(lower.endsWith('.csv')) return ingestCsvText(decodeBytes(new Uint8Array(buf)), name);
+
+    // Unknown extension (manual ID entry) — sniff the actual bytes.
+    const bytes = new Uint8Array(buf);
+    const isZip = bytes.length >= 4 && bytes[0]===0x50 && bytes[1]===0x4B && bytes[2]===0x03 && bytes[3]===0x04;
+    if(isZip) return ingest12dazBuffer(buf, name.endsWith('.12daz') ? name : name + '.12daz');
+
+    const text = decodeBytes(bytes);
+    if(/\bstring\s+(2d|3d|4d|text)\s*\{/i.test(text)) return ingest12daText(text, name.endsWith('.12da') ? name : name + '.12da');
+
+    return ingestCsvText(text, name.endsWith('.csv') ? name : name + '.csv');
   }
 
 })();
