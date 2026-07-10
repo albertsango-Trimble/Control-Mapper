@@ -2021,8 +2021,21 @@
       return;
     }
     document.getElementById('folderModal').style.display = 'flex';
-    folderPath = [{ id: null, name: tcProject.name || 'Project root' }]; // id resolved on first load
-    await loadFolder(null);
+
+    // Redeploying — jump straight to wherever master_control.csv already
+    // lives, instead of always starting back at project root. "Project
+    // root" stays as the first breadcrumb so it's still one click away.
+    const savedRef = getSavedMasterRef();
+    if(savedRef && savedRef.folderId){
+      folderPath = [
+        { id: null, name: tcProject.name || 'Project root' },
+        { id: savedRef.folderId, name: 'master_control.csv folder' }
+      ];
+      await loadFolder(savedRef.folderId);
+    } else {
+      folderPath = [{ id: null, name: tcProject.name || 'Project root' }]; // id resolved on first load
+      await loadFolder(null);
+    }
   }
 
   async function loadFolder(folderId){
