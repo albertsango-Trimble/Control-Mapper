@@ -2295,12 +2295,32 @@
     return s;
   }
 
+  function hexToIfcRgb(hex){
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+    if(!m) return [0.36, 0.55, 0.35]; // fallback ~ default green if something's off
+    return [parseInt(m[1],16)/255, parseInt(m[2],16)/255, parseInt(m[3],16)/255];
+  }
+
   function buildIfcText(points, diameterMm){
     const radius = (diameterMm || 300) / 2 / 1000; // mm -> m
     const lines = [];
     let id = 0;
     const next = () => ++id;
     const ref = (n) => `#${n}`;
+    const styleIdByColor = new Map(); // hex -> IfcSurfaceStyle entity id, so points sharing a colour reuse one style
+
+    function getOrCreateStyle(hexColor){
+      if(styleIdByColor.has(hexColor)) return styleIdByColor.get(hexColor);
+      const [r,g,b] = hexToIfcRgb(hexColor);
+      const colourId = next();
+      lines.push(`#${colourId}=IFCCOLOURRGB($,${r},${g},${b});`);
+      const shadingId = next();
+      lines.push(`#${shadingId}=IFCSURFACESTYLESHADING(${ref(colourId)},0.);`);
+      const styleId = next();
+      lines.push(`#${styleId}=IFCSURFACESTYLE($,.BOTH.,(${ref(shadingId)}));`);
+      styleIdByColor.set(hexColor, styleId);
+      return styleId;
+    }
 
     lines.push("ISO-10303-21;");
     lines.push("HEADER;");
@@ -2394,6 +2414,15 @@
       lines.push(`#${sphereId}=IFCSPHERE(${ref(sphereAxisId)},${radius});`);
       const csgSolidId = next();
       lines.push(`#${csgSolidId}=IFCCSGSOLID(${ref(sphereId)});`);
+
+      // Colour the sphere to match whatever this point shows as on the 2D
+      // map — same colorForSource() logic used there, so master_control
+      // points and other-CSV points stay visually consistent between the
+      // map and the 3D view.
+      const styleId = getOrCreateStyle(colorForSource(p.source));
+      const styledItemId = next();
+      lines.push(`#${styledItemId}=IFCSTYLEDITEM(${ref(csgSolidId)},(${ref(styleId)}),$);`);
+
       const shapeRepId = next();
       lines.push(`#${shapeRepId}=IFCSHAPEREPRESENTATION(${ref(contextId)},'Body','CSG',(${ref(csgSolidId)}));`);
       const prodShapeId = next();
