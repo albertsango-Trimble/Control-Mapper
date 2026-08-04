@@ -590,6 +590,7 @@
         <p class="hint" id="deploySummary" style="margin-bottom:10px;"></p>
         <button class="btn primary full small" id="deployBtn">Deploy as master_control.csv…</button>
         <button class="btn full small" id="versionHistoryBtn" style="margin-top:8px;" disabled title="Deploy at least once first">Version history…</button>
+        <button class="btn full small" id="view3dBtn" style="margin-top:8px;">3D View…</button>
         <div id="deployStatus"></div>
         <div id="previewBanner" class="status-line warn" style="display:none; margin-top:10px;">
           <span class="dot"></span>
@@ -2107,22 +2108,24 @@
   // ---------------- Deploy: folder browser + upload + tag ----------------
   let folderPath = []; // [{id, name}]
   let currentFolderItems = [];
+  let folderPickerPurpose = 'master-csv'; // 'master-csv' | '3d-view'
 
-  document.getElementById('deployBtn').addEventListener('click', openFolderModal);
+  document.getElementById('deployBtn').addEventListener('click', ()=>openFolderModal('master-csv'));
   document.getElementById('folderModalClose').addEventListener('click', ()=>{
     document.getElementById('folderModal').style.display = 'none';
   });
 
-  async function openFolderModal(){
+  async function openFolderModal(purpose){
+    folderPickerPurpose = purpose || 'master-csv';
     if(!tcOuterApi || !tcAccessToken || !tcProject){
-      alert('Not connected to Trimble Connect — deploying requires running inside a project.');
+      alert('Not connected to Trimble Connect — this requires running inside a project.');
       return;
     }
     document.getElementById('folderModal').style.display = 'flex';
 
-    // Redeploying — jump straight to wherever master_control.csv already
-    // lives, instead of always starting back at project root. "Project
-    // root" stays as the first breadcrumb so it's still one click away.
+    // Jump straight to wherever master_control.csv already lives, instead
+    // of always starting back at project root. "Project root" stays as the
+    // first breadcrumb so it's still one click away.
     const savedRef = getSavedMasterRef();
     if(savedRef && savedRef.folderId){
       folderPath = [
@@ -2203,7 +2206,8 @@
   document.getElementById('folderUseHereBtn').addEventListener('click', ()=>{
     const target = folderPath[folderPath.length-1];
     document.getElementById('folderModal').style.display = 'none';
-    deployMasterCsv(target.id);
+    if(folderPickerPurpose === '3d-view') deploy3dView(target.id);
+    else deployMasterCsv(target.id);
   });
 
   async function deployMasterCsv(folderId, contentOverride){
@@ -2253,6 +2257,231 @@
 
       statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
         `Deployed and tagged — "01 Import CSV" now reflects the new master_control.csv. <b>One manual step left:</b> in Trimble Connect's Explorer, select master_control.csv → the ⋮ menu → <b>Checkout File(s)</b> to lock it against overwrites — that action isn't available through the API, only the Connect UI itself.` +
+        `</span></div>`;
+    }catch(e){
+      statusEl.innerHTML = `<div class="status-line err"><span class="dot"></span><span>${escapeHtml(e.message)}</span></div>`;
+    }
+  }
+
+  // ---------------- 3D View: points as spheres in an uploaded IFC ----------------
+  // Generates a minimal but genuinely valid IFC4 file — one
+  // IfcBuildingElementProxy per active point, each a 300mm-diameter sphere
+  // (IfcSphere via IfcCsgSolid) placed at the point's local X/Y/Z, the same
+  // coordinate convention as the source CSV/12da data (so it overlays
+  // correctly with other project models using survey-grid coordinates).
+  //
+  // This was verified before shipping — not just eyeballed — by actually
+  // parsing generated output with ifcopenshell (the standard open-source
+  // IFC engine) and geometry-processing every sphere: correct 300mm
+  // diameter, and world-space centers landing exactly on the source
+  // coordinates, including a null Z correctly defaulting to 0.
+  //
+  // Two things are honestly best-effort rather than fully confirmed:
+  // Trimble's own IFC parser might have stricter expectations than the
+  // open-source reference engine, and the 3D Viewer URL below is inferred
+  // from a real URL Connect generated in this same session for an
+  // unsupported file type — the pattern for a *supported* type (like IFC)
+  // is a well-founded guess, not something directly observed.
+
+  function ifcPad(n){ return n < 10 ? '0'+n : ''+n; }
+  function ifcTimestamp(){
+    const d = new Date();
+    return `${d.getFullYear()}-${ifcPad(d.getMonth()+1)}-${ifcPad(d.getDate())}T${ifcPad(d.getHours())}:${ifcPad(d.getMinutes())}:${ifcPad(d.getSeconds())}`;
+  }
+  const IFC_GUID_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$';
+  function randomIfcGuid(){
+    let s = '';
+    for(let i=0; i<22; i++) s += IFC_GUID_CHARS[Math.floor(Math.random()*IFC_GUID_CHARS.length)];
+    return s;
+  }
+
+  function buildIfcText(points, diameterMm){
+    const radius = (diameterMm || 300) / 2 / 1000; // mm -> m
+    const lines = [];
+    let id = 0;
+    const next = () => ++id;
+    const ref = (n) => `#${n}`;
+
+    lines.push("ISO-10303-21;");
+    lines.push("HEADER;");
+    lines.push(`FILE_DESCRIPTION((''),'2;1');`);
+    lines.push(`FILE_NAME('control_points_3d.ifc','${ifcTimestamp()}',('Control Mapper'),('Ultimate Positioning Group'),'','Control Mapper','');`);
+    lines.push(`FILE_SCHEMA(('IFC4'));`);
+    lines.push("ENDSEC;");
+    lines.push("DATA;");
+
+    const personId = next();
+    lines.push(`#${personId}=IFCPERSON($,$,'User',$,$,$,$,$);`);
+    const orgId = next();
+    lines.push(`#${orgId}=IFCORGANIZATION($,'Ultimate Positioning Group',$,$,$);`);
+    const poId = next();
+    lines.push(`#${poId}=IFCPERSONANDORGANIZATION(${ref(personId)},${ref(orgId)},$);`);
+    const appOrgId = next();
+    lines.push(`#${appOrgId}=IFCORGANIZATION($,'Control Mapper',$,$,$);`);
+    const appId = next();
+    lines.push(`#${appId}=IFCAPPLICATION(${ref(appOrgId)},'1.0','Control Mapper','ControlMapper');`);
+    const ownerHistId = next();
+    lines.push(`#${ownerHistId}=IFCOWNERHISTORY(${ref(poId)},${ref(appId)},$,.ADDED.,$,$,$,0);`);
+
+    const lenUnit = next();
+    lines.push(`#${lenUnit}=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);`);
+    const angUnit = next();
+    lines.push(`#${angUnit}=IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.);`);
+    const unitAssignId = next();
+    lines.push(`#${unitAssignId}=IFCUNITASSIGNMENT((${ref(lenUnit)},${ref(angUnit)}));`);
+
+    const originId = next();
+    lines.push(`#${originId}=IFCCARTESIANPOINT((0.,0.,0.));`);
+    const zDirId = next();
+    lines.push(`#${zDirId}=IFCDIRECTION((0.,0.,1.));`);
+    const xDirId = next();
+    lines.push(`#${xDirId}=IFCDIRECTION((1.,0.,0.));`);
+    const worldPlacementId = next();
+    lines.push(`#${worldPlacementId}=IFCAXIS2PLACEMENT3D(${ref(originId)},${ref(zDirId)},${ref(xDirId)});`);
+    const contextId = next();
+    lines.push(`#${contextId}=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.0E-5,${ref(worldPlacementId)},$);`);
+
+    const projectId = next();
+    lines.push(`#${projectId}=IFCPROJECT('${randomIfcGuid()}',${ref(ownerHistId)},'Control Mapper Points',$,$,$,$,(${ref(contextId)}),${ref(unitAssignId)});`);
+
+    const zeroPointId = next();
+    lines.push(`#${zeroPointId}=IFCCARTESIANPOINT((0.,0.,0.));`);
+    const zDir2 = next();
+    lines.push(`#${zDir2}=IFCDIRECTION((0.,0.,1.));`);
+    const xDir2 = next();
+    lines.push(`#${xDir2}=IFCDIRECTION((1.,0.,0.));`);
+    const sitePlacementAxis = next();
+    lines.push(`#${sitePlacementAxis}=IFCAXIS2PLACEMENT3D(${ref(zeroPointId)},${ref(zDir2)},${ref(xDir2)});`);
+    const sitePlacementId = next();
+    lines.push(`#${sitePlacementId}=IFCLOCALPLACEMENT($,${ref(sitePlacementAxis)});`);
+    const siteId = next();
+    lines.push(`#${siteId}=IFCSITE('${randomIfcGuid()}',${ref(ownerHistId)},'Site',$,$,${ref(sitePlacementId)},$,$,.ELEMENT.,$,$,$,$,$);`);
+
+    const buildingPlacementAxis = next();
+    lines.push(`#${buildingPlacementAxis}=IFCAXIS2PLACEMENT3D(${ref(zeroPointId)},${ref(zDir2)},${ref(xDir2)});`);
+    const buildingPlacementId = next();
+    lines.push(`#${buildingPlacementId}=IFCLOCALPLACEMENT(${ref(sitePlacementId)},${ref(buildingPlacementAxis)});`);
+    const buildingId = next();
+    lines.push(`#${buildingId}=IFCBUILDING('${randomIfcGuid()}',${ref(ownerHistId)},'Building',$,$,${ref(buildingPlacementId)},$,$,.ELEMENT.,$,$,$);`);
+
+    const storeyPlacementAxis = next();
+    lines.push(`#${storeyPlacementAxis}=IFCAXIS2PLACEMENT3D(${ref(zeroPointId)},${ref(zDir2)},${ref(xDir2)});`);
+    const storeyPlacementId = next();
+    lines.push(`#${storeyPlacementId}=IFCLOCALPLACEMENT(${ref(buildingPlacementId)},${ref(storeyPlacementAxis)});`);
+    const storeyId = next();
+    lines.push(`#${storeyId}=IFCBUILDINGSTOREY('${randomIfcGuid()}',${ref(ownerHistId)},'Control Points',$,$,${ref(storeyPlacementId)},$,$,.ELEMENT.,0.);`);
+
+    const relAgg1 = next();
+    lines.push(`#${relAgg1}=IFCRELAGGREGATES('${randomIfcGuid()}',${ref(ownerHistId)},$,$,${ref(projectId)},(${ref(siteId)}));`);
+    const relAgg2 = next();
+    lines.push(`#${relAgg2}=IFCRELAGGREGATES('${randomIfcGuid()}',${ref(ownerHistId)},$,$,${ref(siteId)},(${ref(buildingId)}));`);
+    const relAgg3 = next();
+    lines.push(`#${relAgg3}=IFCRELAGGREGATES('${randomIfcGuid()}',${ref(ownerHistId)},$,$,${ref(buildingId)},(${ref(storeyId)}));`);
+
+    const proxyIds = [];
+    points.forEach(p=>{
+      const z = p.z != null ? p.z : 0;
+
+      const sphereOriginId = next();
+      lines.push(`#${sphereOriginId}=IFCCARTESIANPOINT((0.,0.,0.));`);
+      const sphereZDir = next();
+      lines.push(`#${sphereZDir}=IFCDIRECTION((0.,0.,1.));`);
+      const sphereXDir = next();
+      lines.push(`#${sphereXDir}=IFCDIRECTION((1.,0.,0.));`);
+      const sphereAxisId = next();
+      lines.push(`#${sphereAxisId}=IFCAXIS2PLACEMENT3D(${ref(sphereOriginId)},${ref(sphereZDir)},${ref(sphereXDir)});`);
+      const sphereId = next();
+      lines.push(`#${sphereId}=IFCSPHERE(${ref(sphereAxisId)},${radius});`);
+      const csgSolidId = next();
+      lines.push(`#${csgSolidId}=IFCCSGSOLID(${ref(sphereId)});`);
+      const shapeRepId = next();
+      lines.push(`#${shapeRepId}=IFCSHAPEREPRESENTATION(${ref(contextId)},'Body','CSG',(${ref(csgSolidId)}));`);
+      const prodShapeId = next();
+      lines.push(`#${prodShapeId}=IFCPRODUCTDEFINITIONSHAPE($,$,(${ref(shapeRepId)}));`);
+
+      const ptOriginId = next();
+      lines.push(`#${ptOriginId}=IFCCARTESIANPOINT((${p.x},${p.y},${z}));`);
+      const ptZDir = next();
+      lines.push(`#${ptZDir}=IFCDIRECTION((0.,0.,1.));`);
+      const ptXDir = next();
+      lines.push(`#${ptXDir}=IFCDIRECTION((1.,0.,0.));`);
+      const ptAxisId = next();
+      lines.push(`#${ptAxisId}=IFCAXIS2PLACEMENT3D(${ref(ptOriginId)},${ref(ptZDir)},${ref(ptXDir)});`);
+      const localPlacementId = next();
+      lines.push(`#${localPlacementId}=IFCLOCALPLACEMENT(${ref(storeyPlacementId)},${ref(ptAxisId)});`);
+
+      const proxyId = next();
+      // Avoid STEP's doubled-quote escape convention entirely — testing
+      // with a real IFC engine (ifcopenshell) showed it can silently
+      // corrupt geometry placement resolution for names containing an
+      // apostrophe, even though the raw file is valid STEP syntax. A
+      // Unicode substitute (’) turned out to have the same problem for a
+      // different reason — STEP files are plain ASCII and need a special
+      // \X2\..\X0\ escape for anything outside that, which we're not
+      // generating — so stick to a safe plain-ASCII substitute instead.
+      const name = String(p.id||'').replace(/'/g,'-').replace(/[\r\n]/g,' ').replace(/[^\x20-\x7E]/g,'?');
+      lines.push(`#${proxyId}=IFCBUILDINGELEMENTPROXY('${randomIfcGuid()}',${ref(ownerHistId)},'${name}',$,$,${ref(localPlacementId)},${ref(prodShapeId)},$,$);`);
+      proxyIds.push(proxyId);
+    });
+
+    const relContainId = next();
+    lines.push(`#${relContainId}=IFCRELCONTAINEDINSPATIALSTRUCTURE('${randomIfcGuid()}',${ref(ownerHistId)},$,$,(${proxyIds.map(ref).join(',')}),${ref(storeyId)});`);
+
+    lines.push("ENDSEC;");
+    lines.push("END-ISO-10303-21;");
+
+    return lines.join('\n');
+  }
+
+  document.getElementById('view3dBtn').addEventListener('click', open3dViewFlow);
+
+  async function open3dViewFlow(){
+    if(!tcOuterApi || !tcAccessToken || !tcProject){
+      alert('Not connected to Trimble Connect — this only works when the extension is running inside a project.');
+      return;
+    }
+    const points = getPoints().filter(p=>p.valid && !p.destroyed);
+    if(!points.length){
+      alert('No active points to show — import or unflag some points first.');
+      return;
+    }
+    // Reuse wherever master_control.csv already lives, if known, to avoid
+    // an extra picker step for a quick preview; otherwise ask.
+    const savedRef = getSavedMasterRef();
+    if(savedRef && savedRef.folderId) deploy3dView(savedRef.folderId);
+    else openFolderModal('3d-view');
+  }
+
+  async function deploy3dView(folderId){
+    const statusEl = document.getElementById('deployStatus');
+    const points = getPoints().filter(p=>p.valid && !p.destroyed);
+    statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Building IFC (${points.length} spheres) and uploading…</span></div>`;
+
+    try{
+      const ifcText = buildIfcText(points, 300);
+
+      const uploadRes = await fetch('/api/upload-file', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tcAccessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: tcProject.id,
+          parentId: folderId,
+          parentType: 'FOLDER',
+          fileName: 'control_points_3d.ifc',
+          content: ifcText
+        })
+      });
+      if(!uploadRes.ok) throw new Error(`Upload failed: HTTP ${uploadRes.status}: ${await uploadRes.text()}`);
+      const uploadData = await uploadRes.json();
+      const fileId = uploadData.file && uploadData.file.id;
+      if(!fileId) throw new Error('Upload succeeded but no file id came back — check the raw response.');
+
+      const viewerUrl = `https://web.connect.trimble.com/projects/${encodeURIComponent(tcProject.id)}/viewer?id=${encodeURIComponent(fileId)}&version=${encodeURIComponent(fileId)}&type=revisions`;
+      window.open(viewerUrl, '_blank');
+
+      statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
+        `Uploaded control_points_3d.ifc (${points.length} spheres, 300mm diameter) and opened the 3D Viewer in a new tab. ` +
+        `<b>Trimble Connect needs a few minutes to process a newly uploaded IFC file</b> before the spheres actually render — if the viewer looks empty at first, wait a bit and refresh that tab.` +
         `</span></div>`;
     }catch(e){
       statusEl.innerHTML = `<div class="status-line err"><span class="dot"></span><span>${escapeHtml(e.message)}</span></div>`;
