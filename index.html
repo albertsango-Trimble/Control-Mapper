@@ -352,6 +352,16 @@
     position:absolute; top:54px; right:14px; z-index:1000;
     width:340px; max-height:80vh; overflow-y:auto; padding:16px; display:none;
   }
+  #pointColorBtn{
+    padding:7px 12px; font-size:14px; cursor:pointer; line-height:1;
+  }
+  #pointColorPanel{
+    position:absolute; top:54px; right:14px; z-index:1000;
+    width:280px; padding:16px; display:none;
+  }
+  #pointColorPanel input[type=color]{
+    width:44px; height:32px; padding:2px; border-radius:5px; border:1px solid var(--line-cyan); cursor:pointer;
+  }
 
   #pickBanner{
     position:absolute; top:14px; left:50%; transform:translateX(-50%);
@@ -600,6 +610,26 @@
         <button data-layer="custom" id="customLayerToggleBtn">Custom</button>
         <button id="customLayerEditBtn" title="Configure custom base map (WMTS / XYZ)">⚙</button>
       </div>
+      <button class="glass-panel" id="pointColorBtn" title="Point icon colours">🎨</button>
+    </div>
+
+    <div id="pointColorPanel" class="glass-panel" style="display:none;">
+      <p class="section-label" style="margin:0 0 10px;"><span class="num">◈</span> Point colours</p>
+      <div class="field">
+        <label>master_control.csv points</label>
+        <div class="col-grid" style="grid-template-columns:auto 1fr; align-items:center; gap:10px;">
+          <input type="color" id="masterColorInput">
+          <span id="masterColorHex" class="hint" style="margin:0;"></span>
+        </div>
+      </div>
+      <div class="field">
+        <label>Other CSV points</label>
+        <div class="col-grid" style="grid-template-columns:auto 1fr; align-items:center; gap:10px;">
+          <input type="color" id="otherColorInput">
+          <span id="otherColorHex" class="hint" style="margin:0;"></span>
+        </div>
+      </div>
+      <button class="btn full small" id="resetColorsBtn">Reset to defaults</button>
     </div>
 
     <div id="customLayerPanel" class="glass-panel" style="display:none;">
@@ -822,6 +852,7 @@
   }
 
   function openCustomLayerPanel(){
+    document.getElementById('pointColorPanel').style.display = 'none';
     document.getElementById('customLayerPanel').style.display = 'block';
   }
   function closeCustomLayerPanel(){
@@ -832,11 +863,51 @@
   }
 
   document.getElementById('customLayerEditBtn').addEventListener('click', ()=>{
+    document.getElementById('pointColorPanel').style.display = 'none';
     const panel = document.getElementById('customLayerPanel');
     if(panel.style.display === 'block') closeCustomLayerPanel();
     else openCustomLayerPanel();
   });
   document.getElementById('customLayerCancelBtn').addEventListener('click', closeCustomLayerPanel);
+
+  // ---------------- Point icon colours ----------------
+  function refreshPointColorInputs(){
+    document.getElementById('masterColorInput').value = MASTER_COLOR;
+    document.getElementById('masterColorHex').textContent = MASTER_COLOR;
+    document.getElementById('otherColorInput').value = OTHER_COLOR;
+    document.getElementById('otherColorHex').textContent = OTHER_COLOR;
+  }
+
+  document.getElementById('pointColorBtn').addEventListener('click', ()=>{
+    closeCustomLayerPanel();
+    const panel = document.getElementById('pointColorPanel');
+    if(panel.style.display === 'block'){
+      panel.style.display = 'none';
+    } else {
+      refreshPointColorInputs();
+      panel.style.display = 'block';
+    }
+  });
+
+  document.getElementById('masterColorInput').addEventListener('input', e=>{
+    MASTER_COLOR = e.target.value;
+    document.getElementById('masterColorHex').textContent = MASTER_COLOR;
+    savePointColors();
+    plotAllPoints();
+  });
+  document.getElementById('otherColorInput').addEventListener('input', e=>{
+    OTHER_COLOR = e.target.value;
+    document.getElementById('otherColorHex').textContent = OTHER_COLOR;
+    savePointColors();
+    plotAllPoints();
+  });
+  document.getElementById('resetColorsBtn').addEventListener('click', ()=>{
+    MASTER_COLOR = DEFAULT_MASTER_COLOR;
+    OTHER_COLOR = DEFAULT_OTHER_COLOR;
+    savePointColors();
+    refreshPointColorInputs();
+    plotAllPoints();
+  });
 
   let wmtsLayers = [];       // parsed from the last-loaded capabilities doc
   let wmtsKvpBase = null;    // fallback GetTile endpoint if no RESTful template
@@ -1080,11 +1151,32 @@
   }
 
   // Points sourced from master_control.csv render green; points from any
-  // other imported CSV render blue — a quick visual read of what's already
-  // "official" versus what's newly added and not yet deployed.
+  // other imported CSV render blue by default — a quick visual read of
+  // what's already "official" versus what's newly added and not yet
+  // deployed. Both colors are user-configurable via the palette button
+  // next to the layer toggle, and persist across sessions in this browser.
   const MASTER_FILE_NAME = 'master_control.csv';
-  const MASTER_COLOR = '#5b8c5a';
-  const OTHER_COLOR = '#4a90d9';
+  const DEFAULT_MASTER_COLOR = '#5b8c5a';
+  const DEFAULT_OTHER_COLOR = '#4a90d9';
+  let MASTER_COLOR = DEFAULT_MASTER_COLOR;
+  let OTHER_COLOR = DEFAULT_OTHER_COLOR;
+
+  function loadSavedPointColors(){
+    try{
+      const raw = localStorage.getItem('controlMapper.pointColors');
+      if(!raw) return;
+      const saved = JSON.parse(raw);
+      if(saved.master) MASTER_COLOR = saved.master;
+      if(saved.other) OTHER_COLOR = saved.other;
+    }catch(e){ /* not critical */ }
+  }
+  loadSavedPointColors();
+
+  function savePointColors(){
+    try{ localStorage.setItem('controlMapper.pointColors', JSON.stringify({ master: MASTER_COLOR, other: OTHER_COLOR })); }
+    catch(e){ /* not critical */ }
+  }
+
   function isMasterSource(source){
     return (source || '').trim().toLowerCase() === MASTER_FILE_NAME;
   }
