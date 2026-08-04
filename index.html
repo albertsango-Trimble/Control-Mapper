@@ -2422,6 +2422,43 @@
       const name = String(p.id||'').replace(/'/g,'-').replace(/[\r\n]/g,' ').replace(/[^\x20-\x7E]/g,'?');
       lines.push(`#${proxyId}=IFCBUILDINGELEMENTPROXY('${randomIfcGuid()}',${ref(ownerHistId)},'${name}',$,$,${ref(localPlacementId)},${ref(prodShapeId)},$,$);`);
       proxyIds.push(proxyId);
+
+      // Text label showing the point ID, floating just above the sphere
+      // (radius + a bit of clearance) so it doesn't visually collide with
+      // the geometry. Standard IFC way to embed text (IfcAnnotation +
+      // IfcTextLiteral) — whether it actually renders as visible text
+      // depends on the specific viewer's support for annotation display in
+      // 3D, which varies a lot industry-wide; the point ID is also always
+      // available via the sphere's own Name property regardless.
+      const textOriginId = next();
+      lines.push(`#${textOriginId}=IFCCARTESIANPOINT((0.,0.,0.));`);
+      const textZDir = next();
+      lines.push(`#${textZDir}=IFCDIRECTION((0.,0.,1.));`);
+      const textXDir = next();
+      lines.push(`#${textXDir}=IFCDIRECTION((1.,0.,0.));`);
+      const textAxisId = next();
+      lines.push(`#${textAxisId}=IFCAXIS2PLACEMENT3D(${ref(textOriginId)},${ref(textZDir)},${ref(textXDir)});`);
+      const textLiteralId = next();
+      lines.push(`#${textLiteralId}=IFCTEXTLITERAL('${name}',${ref(textAxisId)},.RIGHT.);`);
+      const textShapeRepId = next();
+      lines.push(`#${textShapeRepId}=IFCSHAPEREPRESENTATION(${ref(contextId)},'Annotation','Annotation2D',(${ref(textLiteralId)}));`);
+      const textProdShapeId = next();
+      lines.push(`#${textProdShapeId}=IFCPRODUCTDEFINITIONSHAPE($,$,(${ref(textShapeRepId)}));`);
+
+      const textPtOriginId = next();
+      lines.push(`#${textPtOriginId}=IFCCARTESIANPOINT((${p.x},${p.y},${z + radius + 0.15}));`);
+      const textPtZDir = next();
+      lines.push(`#${textPtZDir}=IFCDIRECTION((0.,0.,1.));`);
+      const textPtXDir = next();
+      lines.push(`#${textPtXDir}=IFCDIRECTION((1.,0.,0.));`);
+      const textPtAxisId = next();
+      lines.push(`#${textPtAxisId}=IFCAXIS2PLACEMENT3D(${ref(textPtOriginId)},${ref(textPtZDir)},${ref(textPtXDir)});`);
+      const textLocalPlacementId = next();
+      lines.push(`#${textLocalPlacementId}=IFCLOCALPLACEMENT(${ref(storeyPlacementId)},${ref(textPtAxisId)});`);
+
+      const annotationId = next();
+      lines.push(`#${annotationId}=IFCANNOTATION('${randomIfcGuid()}',${ref(ownerHistId)},'${name}',$,$,${ref(textLocalPlacementId)},${ref(textProdShapeId)});`);
+      proxyIds.push(annotationId);
     });
 
     const relContainId = next();
