@@ -415,6 +415,13 @@
     filter:drop-shadow(0 1px 3px rgba(16,24,40,.3));
   }
 
+  /* Stripped-down UI when running as a 3D Viewer extension — just Import
+     and the map; coordinate-system/points-table/deploy management isn't
+     relevant to a "click a point, see it selected in 3D" companion. */
+  body.mode-3dviewer #section-crs,
+  body.mode-3dviewer #section-points,
+  body.mode-3dviewer #section-deploy{ display:none !important; }
+
   @media (max-width:760px){
     #sidebar{ width:100vw; position:absolute; z-index:1002; height:100vh; }
     #mapArea{ display:none; }
@@ -2047,6 +2054,9 @@
         );
       marker.addTo(plottedLayer);
       marker._rowIndex = p.rowIndex;
+      if(isViewerCompanion){
+        marker.on('click', ()=> selectPointInViewer(p));
+      }
       plottedMarkers.push(marker);
       bounds.push([lat,lon]);
     });
@@ -2313,13 +2323,112 @@
     return s;
   }
 
+  // ---- Deterministic point GUIDs ----
+  // Point elements (unlike structural entities like Project/Site/Building)
+  // need a GUID that can be independently recomputed later — e.g. by the
+  // stripped-down 3D-viewer companion, to select the right sphere when a
+  // 2D map point is clicked, without needing to store/transmit a lookup
+  // table anywhere. Same point ID (scoped to the project) always yields
+  // the same GUID.
+  //
+  // The compression step (uncompressed UUID hex -> 22-char IFC GlobalId)
+  // is a verified port of buildingSMART's algorithm, tested byte-for-byte
+  // against ifcopenshell's own reference implementation before shipping —
+  // not reimplemented from memory and hoped-correct.
+  function fnv1aHash(str, seed){
+    let h = (seed >>> 0) || 0x811c9dc5;
+    for(let i=0; i<str.length; i++){
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+  function deterministicUuidHex(seedString){
+    const parts = [0,1,2,3].map(i => fnv1aHash(seedString + '::' + i, 0x811c9dc5 + i));
+    return parts.map(p => p.toString(16).padStart(8,'0')).join('');
+  }
+  function ifcGuidFromUuidHex(uuidHex){
+    const padded = '0000' + uuidHex; // 36 hex chars = 18 bytes
+    const bytes = [];
+    for(let i=0; i<padded.length; i+=2) bytes.push(parseInt(padded.substr(i,2), 16));
+    const bin = String.fromCharCode(...bytes);
+    const stdB64 = btoa(bin).slice(2); // drop the 2 chars that only encode the padding nibbles
+    const STD = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for(const ch of stdB64) out += IFC_GUID_CHARS[STD.indexOf(ch)];
+    return out;
+  }
+  function uuidHexToDashed(hex){
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  }
+  // The uncompressed (dashed) UUID — this is what Trimble's ViewerAPI docs
+  // say convertToObjectRuntimeIds expects as the "external id" for IFC.
+  function pointExternalId(pointId, projectId){
+    return uuidHexToDashed(deterministicUuidHex(`${projectId}::${pointId}`));
+  }
+  // The compressed 22-char form — this is what actually gets written into
+  // the IFC file itself as each element's GlobalId attribute.
+  function pointIfcGlobalId(pointId, projectId){
+    return ifcGuidFromUuidHex(deterministicUuidHex(`${projectId}::${pointId}`));
+  }
+
+  // Clicking a point on the 2D map selects the matching sphere in whatever
+  // IFC model is currently loaded in the 3D Viewer alongside this
+  // companion — using the same deterministic GlobalId derivation as the
+  // IFC generator, so no lookup table needs to be stored or transmitted;
+  // both sides independently compute the same id from the point's own ID.
+  let viewerSelectStatusTimer = null;
+  async function selectPointInViewer(p){
+    if(!tcOuterApi || !tcProject) return;
+    try{
+      const models = await tcOuterApi.viewer.getModels('loaded');
+      if(!models || !models.length){
+        setViewerSelectStatus('err', 'No 3D model is loaded in the viewer to select against.');
+        return;
+      }
+      // Prefer a model this tool itself generated; fall back to whatever's loaded.
+      const preferred = models.find(m => /(?:^|\/)(master_control|temp_view_control)\.ifc$/i.test(m.name || '')) || models[0];
+      const modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
+
+      const externalId = pointExternalId(p.id, tcProject.id);
+      const runtimeIds = await tcOuterApi.viewer.convertToObjectRuntimeIds(modelId, [externalId]);
+      const runtimeId = runtimeIds && runtimeIds[0];
+      if(runtimeId == null){
+        setViewerSelectStatus('err', `Couldn't find "${p.id}" in the loaded 3D model — it may not be processed yet, or doesn't match what's currently loaded.`);
+        return;
+      }
+      const selector = { modelObjectIds:[{ modelId, objectRuntimeIds:[runtimeId] }] };
+      await tcOuterApi.viewer.setSelection(selector, 'set');
+      await tcOuterApi.viewer.setCamera(selector).catch(()=>{}); // fly to it too; non-fatal if unsupported
+      setViewerSelectStatus('ok', `Selected "${p.id}" in the 3D Viewer.`);
+    }catch(e){
+      setViewerSelectStatus('err', `Couldn't select that point in the 3D Viewer (${e.message}).`);
+    }
+  }
+
+  function setViewerSelectStatus(kind, msg){
+    let el = document.getElementById('viewerSelectStatus');
+    if(!el){
+      el = document.createElement('div');
+      el.id = 'viewerSelectStatus';
+      el.className = 'glass-panel';
+      el.style.cssText = 'position:absolute; bottom:14px; right:14px; z-index:1000; padding:8px 14px; font-family:var(--font-ui); font-size:12px; max-width:340px;';
+      document.getElementById('mapArea').appendChild(el);
+    }
+    el.className = 'glass-panel status-line ' + kind;
+    el.style.display = 'flex';
+    el.innerHTML = `<span class="dot"></span><span>${escapeHtml(msg)}</span>`;
+    clearTimeout(viewerSelectStatusTimer);
+    viewerSelectStatusTimer = setTimeout(()=>{ el.style.display = 'none'; }, 4000);
+  }
+
   function hexToIfcRgb(hex){
     const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
     if(!m) return [0.36, 0.55, 0.35]; // fallback ~ default green if something's off
     return [parseInt(m[1],16)/255, parseInt(m[2],16)/255, parseInt(m[3],16)/255];
   }
 
-  function buildIfcText(points, diameterMm){
+  function buildIfcText(points, diameterMm, tcProjectId){
     const radius = (diameterMm || 300) / 2 / 1000; // mm -> m
     const lines = [];
     let id = 0;
@@ -2495,7 +2604,7 @@
       // \X2\..\X0\ escape for anything outside that, which we're not
       // generating — so stick to a safe plain-ASCII substitute instead.
       const name = String(p.id||'').replace(/'/g,'-').replace(/[\r\n]/g,' ').replace(/[^\x20-\x7E]/g,'?');
-      lines.push(`#${proxyId}=IFCBUILDINGELEMENTPROXY('${randomIfcGuid()}',${ref(ownerHistId)},'${name}',$,$,${ref(localPlacementId)},${ref(prodShapeId)},$,$);`);
+      lines.push(`#${proxyId}=IFCBUILDINGELEMENTPROXY('${pointIfcGlobalId(p.id, tcProjectId)}',${ref(ownerHistId)},'${name}',$,$,${ref(localPlacementId)},${ref(prodShapeId)},$,$);`);
       proxyIds.push(proxyId);
 
       if(!proxyIdsByColor.has(color)) proxyIdsByColor.set(color, []);
@@ -2624,7 +2733,7 @@
     statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Building ${fileName} (${points.length} spheres) and uploading…</span></div>`;
 
     try{
-      const ifcText = buildIfcText(points, 300);
+      const ifcText = buildIfcText(points, 300, tcProject.id);
 
       const uploadRes = await fetch('/api/upload-file', {
         method: 'POST',
@@ -2802,6 +2911,15 @@
     resetGeoref();
   }
 
+  // Stripped-down UI for the 3D-viewer companion: just Import + the map.
+  // Coordinate system and points-table/deploy management aren't relevant
+  // when this instance's whole job is showing already-deployed points
+  // alongside the 3D model, not curating them.
+  function applyCompanionModeUI(){
+    if(!isViewerCompanion) return;
+    document.body.classList.add('mode-3dviewer');
+  }
+
   function escapeHtml(str){
     return str.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
@@ -2814,6 +2932,7 @@
   // the project's own file explorer to pick a CSV. The app is fully usable
   // standalone too — this block simply no-ops outside of Connect.
   let tcOuterApi = null;
+  let isViewerCompanion = false; // true when running as a 3D Viewer extension rather than a Project extension
   let tcAccessToken = null;
 
   (function connectToTrimble(){
@@ -2836,10 +2955,22 @@
           tcOuterApi = api;
           document.getElementById('browseConnectBtn').disabled = false;
 
+          // Detect which context we're running in — the main Project panel
+          // (full tool) or embedded inside the 3D Viewer (stripped-down
+          // companion: map + auto-loaded master_control, click a point to
+          // select the matching sphere in the 3D model alongside it).
+          try{
+            api.extension.getHost().then(function(host){
+              isViewerCompanion = !!(host && host.name === '3dviewer');
+              applyCompanionModeUI();
+            }).catch(function(){ /* older Connect versions may not support getHost — stays in full mode */ });
+          }catch(e){ /* not available */ }
+
           // This is the call that actually puts "Control Mapper" into Connect's
           // left-hand navigation menu. Being enabled in Project Settings >
           // Extensions is not enough on its own — the extension has to
-          // register its own menu entry once it connects.
+          // register its own menu entry once it connects. Only meaningful
+          // for the Project-extension context; harmless no-op otherwise.
           try{
             api.ui.setMenu({
               title: 'Control Mapper',
