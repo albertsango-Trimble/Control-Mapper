@@ -2978,12 +2978,39 @@
       const entry = (result || []).find(r => r.modelId === modelId) || (result || [])[0];
       const objects = (entry && entry.objects) || [];
 
-      const points = objects
-        .filter(o => o.position && o.product && o.product.name)
-        .map(o => ({ id: o.product.name, x: o.position.x, y: o.position.y, z: o.position.z, runtimeId: o.id }));
+      // Only objects with a Name (our point ID) are candidates — filters
+      // out the spatial-structure entities (Project/Site/Building/Storey)
+      // that don't represent individual points.
+      const named = objects.filter(o => o.product && o.product.name);
+      if(!named.length){
+        setCompanionStatus('err', `${preferred.name} is loaded, but no named point objects were found in it.`);
+        return;
+      }
+
+      // Position comes from each sphere's bounding-box centre rather than
+      // ObjectProperties.position — for a perfect sphere the two are
+      // mathematically identical (the centre of gravity), and bounding
+      // boxes turned out to be far more reliably populated: position came
+      // back empty for our CSG solid geometry specifically, which is why
+      // the earlier attempt found zero usable points.
+      const runtimeIds = named.map(o => o.id);
+      const boxes = await tcOuterApi.viewer.getObjectBoundingBoxes(modelId, runtimeIds);
+      const boxById = new Map((boxes || []).map(b => [b.id, b.boundingBox]));
+
+      const points = named.map(o => {
+        const box = boxById.get(o.id);
+        if(!box) return null;
+        return {
+          id: o.product.name,
+          x: (box.min.x + box.max.x) / 2,
+          y: (box.min.y + box.max.y) / 2,
+          z: (box.min.z + box.max.z) / 2,
+          runtimeId: o.id
+        };
+      }).filter(Boolean);
 
       if(!points.length){
-        setCompanionStatus('err', `${preferred.name} is loaded, but no point objects were found in it.`);
+        setCompanionStatus('err', `${preferred.name} is loaded, but no bounding-box geometry could be read for its points.`);
         return;
       }
 
