@@ -415,18 +415,6 @@
     filter:drop-shadow(0 1px 3px rgba(16,24,40,.3));
   }
 
-  /* Stripped-down UI when running as a 3D Viewer extension — just Import
-     and the map; coordinate-system/points-table/deploy management isn't
-     relevant to a "click a point, see it selected in 3D" companion. */
-  body.mode-3dviewer #section-upload,
-  body.mode-3dviewer #section-crs,
-  body.mode-3dviewer #section-points,
-  body.mode-3dviewer #section-deploy{ display:none !important; }
-  #companionStatus{ display:none; }
-  body.mode-3dviewer #companionStatus{ display:flex; }
-  #companionRefreshBtn{ display:none; }
-  body.mode-3dviewer #companionRefreshBtn{ display:block; }
-
   @media (max-width:760px){
     #sidebar{ width:100vw; position:absolute; z-index:1002; height:100vh; }
     #mapArea{ display:none; }
@@ -520,11 +508,6 @@
           <p>CSV → geolocated site points</p>
         </div>
       </div>
-
-      <div id="companionStatus" class="status-line warn" style="margin-top:14px;">
-        <span class="dot"></span><span id="companionStatusText">Reading points from the 3D Viewer…</span>
-      </div>
-      <button class="btn full small" id="companionRefreshBtn" style="margin-top:8px;">Refresh from 3D Viewer</button>
 
       <!-- 1. Upload -->
       <div class="section" id="section-upload">
@@ -1698,12 +1681,7 @@
         x, y, z: isNaN(z) ? null : z,
         valid: !isNaN(x) && !isNaN(y),
         destroyed: !!row.__destroyed,
-        source: row.__source || '',
-        // Set only for points read directly from a loaded 3D model (the
-        // viewer-companion path) — lets selectPointInViewer skip the
-        // GUID round-trip entirely and select immediately.
-        viewerRuntimeId: row.__viewerRuntimeId,
-        viewerModelId: row.__viewerModelId
+        source: row.__source || ''
       };
     });
   }
@@ -2070,9 +2048,6 @@
         );
       marker.addTo(plottedLayer);
       marker._rowIndex = p.rowIndex;
-      if(isViewerCompanion){
-        marker.on('click', ()=> selectPointInViewer(p));
-      }
       plottedMarkers.push(marker);
       bounds.push([lat,lon]);
     });
@@ -2374,79 +2349,12 @@
     for(const ch of stdB64) out += IFC_GUID_CHARS[STD.indexOf(ch)];
     return out;
   }
-  function uuidHexToDashed(hex){
-    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
-  }
-  // The uncompressed (dashed) UUID — this is what Trimble's ViewerAPI docs
-  // say convertToObjectRuntimeIds expects as the "external id" for IFC.
-  function pointExternalId(pointId, projectId){
-    return uuidHexToDashed(deterministicUuidHex(`${projectId}::${pointId}`));
-  }
   // The compressed 22-char form — this is what actually gets written into
   // the IFC file itself as each element's GlobalId attribute.
   function pointIfcGlobalId(pointId, projectId){
     return ifcGuidFromUuidHex(deterministicUuidHex(`${projectId}::${pointId}`));
   }
 
-  // Clicking a point on the 2D map selects the matching sphere in whatever
-  // IFC model is currently loaded in the 3D Viewer alongside this
-  // companion — using the same deterministic GlobalId derivation as the
-  // IFC generator, so no lookup table needs to be stored or transmitted;
-  // both sides independently compute the same id from the point's own ID.
-  let viewerSelectStatusTimer = null;
-  async function selectPointInViewer(p){
-    if(!tcOuterApi || !tcProject) return;
-    try{
-      let modelId, runtimeId;
-
-      if(p.viewerRuntimeId != null && p.viewerModelId){
-        // Fast path — point was read directly from the loaded model
-        // (loadPointsFromViewerModel), so we already have everything
-        // needed and can skip the GUID lookup entirely.
-        modelId = p.viewerModelId;
-        runtimeId = p.viewerRuntimeId;
-      } else {
-        const models = await tcOuterApi.viewer.getModels('loaded');
-        if(!models || !models.length){
-          setViewerSelectStatus('err', 'No 3D model is loaded in the viewer to select against.');
-          return;
-        }
-        const preferred = models.find(m => /(?:^|\/)(master_control|temp_view_control)\.ifc$/i.test(m.name || '')) || models[0];
-        modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
-
-        const externalId = pointExternalId(p.id, tcProject.id);
-        const runtimeIds = await tcOuterApi.viewer.convertToObjectRuntimeIds(modelId, [externalId]);
-        runtimeId = runtimeIds && runtimeIds[0];
-        if(runtimeId == null){
-          setViewerSelectStatus('err', `Couldn't find "${p.id}" in the loaded 3D model — it may not be processed yet, or doesn't match what's currently loaded.`);
-          return;
-        }
-      }
-
-      const selector = { modelObjectIds:[{ modelId, objectRuntimeIds:[runtimeId] }] };
-      await tcOuterApi.viewer.setSelection(selector, 'set');
-      await tcOuterApi.viewer.setCamera(selector).catch(()=>{}); // fly to it too; non-fatal if unsupported
-      setViewerSelectStatus('ok', `Selected "${p.id}" in the 3D Viewer.`);
-    }catch(e){
-      setViewerSelectStatus('err', `Couldn't select that point in the 3D Viewer (${e.message}).`);
-    }
-  }
-
-  function setViewerSelectStatus(kind, msg){
-    let el = document.getElementById('viewerSelectStatus');
-    if(!el){
-      el = document.createElement('div');
-      el.id = 'viewerSelectStatus';
-      el.className = 'glass-panel';
-      el.style.cssText = 'position:absolute; bottom:14px; right:14px; z-index:1000; padding:8px 14px; font-family:var(--font-ui); font-size:12px; max-width:340px;';
-      document.getElementById('mapArea').appendChild(el);
-    }
-    el.className = 'glass-panel status-line ' + kind;
-    el.style.display = 'flex';
-    el.innerHTML = `<span class="dot"></span><span>${escapeHtml(msg)}</span>`;
-    clearTimeout(viewerSelectStatusTimer);
-    viewerSelectStatusTimer = setTimeout(()=>{ el.style.display = 'none'; }, 4000);
-  }
 
   function hexToIfcRgb(hex){
     const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
@@ -2937,145 +2845,6 @@
     resetGeoref();
   }
 
-  // Stripped-down UI for the 3D-viewer companion: just Import + the map.
-  // Coordinate system and points-table/deploy management aren't relevant
-  // when this instance's whole job is showing already-deployed points
-  // alongside the 3D model, not curating them.
-  function applyCompanionModeUI(){
-    if(!isViewerCompanion) return;
-    document.body.classList.add('mode-3dviewer');
-  }
-
-  document.getElementById('companionRefreshBtn').addEventListener('click', loadPointsFromIfcFile);
-
-  // ---- Minimal STEP/IFC entity parser, scoped to our own generator's output ----
-  // Not a general-purpose IFC parser — just enough to walk the exact
-  // structure buildIfcText() produces: IfcBuildingElementProxy ->
-  // IfcLocalPlacement -> IfcAxis2Placement3D -> IfcCartesianPoint. Since we
-  // fully control that structure, this is far more tractable (and
-  // reliable) than depending on Trimble's live 3D-viewer API, which
-  // testing showed crashes inside its own hierarchy-walking worker for
-  // this file (a genuine bug on their side, not something fixable from
-  // the API-call side).
-  function parseStepEntities(text){
-    const entities = new Map();
-    const re = /#(\d+)\s*=\s*([A-Z_0-9]+)\s*\(/g;
-    let m;
-    while((m = re.exec(text)) !== null){
-      const id = m[1];
-      const type = m[2];
-      const startParen = m.index + m[0].length - 1;
-      let depth = 0, inQuote = false, i = startParen;
-      for(; i < text.length; i++){
-        const c = text[i];
-        if(c === "'" && text[i-1] !== '\\') inQuote = !inQuote;
-        if(!inQuote){
-          if(c === '(') depth++;
-          else if(c === ')'){ depth--; if(depth === 0) break; }
-        }
-      }
-      entities.set(id, { type, argsRaw: text.slice(startParen+1, i) });
-    }
-    return entities;
-  }
-  function splitTopLevelArgs(argsRaw){
-    const args = [];
-    let depth = 0, inQuote = false, current = '';
-    for(let i=0; i<argsRaw.length; i++){
-      const c = argsRaw[i];
-      if(c === "'" && argsRaw[i-1] !== '\\') inQuote = !inQuote;
-      if(!inQuote){
-        if(c === '(') depth++;
-        if(c === ')') depth--;
-      }
-      if(c === ',' && depth === 0 && !inQuote){ args.push(current.trim()); current = ''; }
-      else current += c;
-    }
-    if(current.trim() !== '') args.push(current.trim());
-    return args;
-  }
-  function ifcRefId(arg){
-    const m = /^#(\d+)$/.exec((arg||'').trim());
-    return m ? m[1] : null;
-  }
-  function parseIfcPoints(text){
-    const entities = parseStepEntities(text);
-    const points = [];
-    for(const [, {type, argsRaw}] of entities){
-      if(type !== 'IFCBUILDINGELEMENTPROXY') continue;
-      const args = splitTopLevelArgs(argsRaw);
-      const nameArg = args[2];
-      const name = (nameArg && nameArg.startsWith("'")) ? nameArg.slice(1,-1).replace(/''/g,"'") : nameArg;
-
-      const placementId = ifcRefId(args[5]);
-      const placementEnt = placementId && entities.get(placementId);
-      if(!placementEnt || placementEnt.type !== 'IFCLOCALPLACEMENT') continue;
-      const placementArgs = splitTopLevelArgs(placementEnt.argsRaw);
-
-      const axisId = ifcRefId(placementArgs[1]);
-      const axisEnt = axisId && entities.get(axisId);
-      if(!axisEnt || axisEnt.type !== 'IFCAXIS2PLACEMENT3D') continue;
-      const axisArgs = splitTopLevelArgs(axisEnt.argsRaw);
-
-      const locId = ifcRefId(axisArgs[0]);
-      const locEnt = locId && entities.get(locId);
-      if(!locEnt || locEnt.type !== 'IFCCARTESIANPOINT') continue;
-      const locArgs = splitTopLevelArgs(locEnt.argsRaw);
-
-      const coordsStr = locArgs[0].replace(/^\(/,'').replace(/\)$/,'');
-      const coords = coordsStr.split(',').map(s=>parseFloat(s.trim()));
-      if(coords.length < 2 || isNaN(coords[0]) || isNaN(coords[1])) continue;
-
-      points.push({ id: name, x: coords[0], y: coords[1], z: coords.length>2 && !isNaN(coords[2]) ? coords[2] : null });
-    }
-    return points;
-  }
-
-  async function loadPointsFromIfcFile(){
-    console.log('[Control Mapper] loadPointsFromIfcFile() entered.');
-    if(!tcOuterApi || !tcAccessToken){ console.log('[Control Mapper] loadPointsFromIfcFile() bailing — tcOuterApi:', !!tcOuterApi, 'tcAccessToken:', !!tcAccessToken); return; }
-    const ref = getSaved3dViewRef('master');
-    console.log('[Control Mapper] getSaved3dViewRef("master"):', JSON.stringify(ref));
-    if(!ref || !ref.fileId){
-      setCompanionStatus('warn', 'No master_control.ifc is remembered in this browser yet — generate it once via "3D View" → "Master Control" in Control Mapper\'s main panel, then reopen this 3D Viewer panel.');
-      return;
-    }
-
-    setCompanionStatus('warn', 'Reading points from master_control.ifc…');
-    try{
-      console.log('[Control Mapper] Fetching /api/download-file for master_control.ifc, fileId:', ref.fileId);
-      const res = await fetchWithTimeout(`/api/download-file?fileId=${encodeURIComponent(ref.fileId)}`, {
-        headers: { Authorization: `Bearer ${tcAccessToken}` }
-      });
-      console.log('[Control Mapper] Fetch returned. ok:', res.ok, 'status:', res.status);
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      console.log('[Control Mapper] Response text length:', text.length);
-
-      const points = parseIfcPoints(text);
-      console.log('[Control Mapper] Parsed points:', points.length);
-      if(!points.length){
-        setCompanionStatus('err', 'master_control.ifc was read, but no point geometry could be parsed from it.');
-        return;
-      }
-
-      // A refresh should cleanly reflect the file's current state, not
-      // merge against whatever was there before — clearing first also
-      // sidesteps the duplicate-ID conflict modal, which doesn't fit this
-      // stripped-down companion UI.
-      clearPointsKeepGeoref();
-      const synthHeaders = ['Column 1','Column 2','Column 3','Column 4','Column 5'];
-      const rows = points.map(p => ({
-        'Column 1': p.id, 'Column 2': p.x, 'Column 3': p.y, 'Column 4': p.z != null ? p.z : '', 'Column 5': ''
-      }));
-      mergeRows(synthHeaders, rows, 'master_control.ifc');
-
-      setCompanionStatus('ok', `${points.length} points loaded from master_control.ifc — click a point to select it in the 3D Viewer.`);
-    }catch(e){
-      setCompanionStatus('err', `Couldn't read master_control.ifc (${e.message}).`);
-    }
-  }
-
   function escapeHtml(str){
     return str.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
@@ -3088,33 +2857,7 @@
   // the project's own file explorer to pick a CSV. The app is fully usable
   // standalone too — this block simply no-ops outside of Connect.
   let tcOuterApi = null;
-  let isViewerCompanion = false; // true when running as a 3D Viewer extension rather than a Project extension
   let tcAccessToken = null;
-  let hostDetectPromise = null;
-
-  // Idempotent — safe to call from multiple places; only ever actually
-  // calls getHost() once. Anything that needs to know isViewerCompanion
-  // reliably should await this first, rather than assuming it's already
-  // resolved by the time they run (getHost() is async, and several
-  // bootstrap triggers can fire before it completes).
-  function ensureHostDetected(){
-    if(hostDetectPromise) return hostDetectPromise;
-    if(!tcOuterApi || typeof tcOuterApi.extension.getHost !== 'function'){
-      console.warn('[Control Mapper] getHost() is not available on this Workspace API — extension.getHost:', tcOuterApi && typeof tcOuterApi.extension.getHost);
-      hostDetectPromise = Promise.resolve();
-      return hostDetectPromise;
-    }
-    console.log('[Control Mapper] Calling getHost()…');
-    hostDetectPromise = tcOuterApi.extension.getHost().then(function(host){
-      console.log('[Control Mapper] getHost() resolved:', JSON.stringify(host));
-      isViewerCompanion = !!(host && host.name === '3dviewer');
-      console.log('[Control Mapper] isViewerCompanion set to:', isViewerCompanion);
-      applyCompanionModeUI();
-    }).catch(function(e){
-      console.warn('[Control Mapper] getHost() rejected — staying in full mode:', e && e.message);
-    });
-    return hostDetectPromise;
-  }
 
   (function connectToTrimble(){
     if(window.parent === window) return; // not embedded, skip
@@ -3123,13 +2866,10 @@
     s.onload = function(){
       try{
         TrimbleConnectWorkspace.connect(window.parent, function(event, data){
-          console.log('[Control Mapper] Outer connect event:', event);
           if(event === 'extension.accessToken' && data && data.accessToken){
-            console.log('[Control Mapper] Got accessToken via extension.accessToken event.');
             tcAccessToken = data.accessToken;
             prewarmExplorer();
             tryAutoLoadMaster();
-            tryLoadCompanionPoints();
           }
           if(event === 'extension.userSettingsChanged'){
             tcOuterApi && tcOuterApi.project.getProject().then(applyProjectCrsInfo);
@@ -3139,21 +2879,10 @@
           tcOuterApi = api;
           document.getElementById('browseConnectBtn').disabled = false;
 
-          // Detect which context we're running in — the main Project panel
-          // (full tool) or embedded inside the 3D Viewer (stripped-down
-          // companion: map + auto-loaded master_control, click a point to
-          // select the matching sphere in the 3D model alongside it).
-          // Kicked off here so it starts as early as possible; anything
-          // that depends on knowing isViewerCompanion (like
-          // prewarmExplorer) awaits ensureHostDetected() itself rather
-          // than assuming this has already resolved by the time it runs.
-          ensureHostDetected();
-
           // This is the call that actually puts "Control Mapper" into Connect's
           // left-hand navigation menu. Being enabled in Project Settings >
           // Extensions is not enough on its own — the extension has to
-          // register its own menu entry once it connects. Only meaningful
-          // for the Project-extension context; harmless no-op otherwise.
+          // register its own menu entry once it connects.
           try{
             api.ui.setMenu({
               title: 'Control Mapper',
@@ -3165,23 +2894,12 @@
           // Ask for an access token up front so Browse from Connect is instant later.
           // The user may see a one-time consent prompt inside Connect; the token
           // itself arrives via the extension.accessToken event above.
-          console.log('[Control Mapper] Calling getPermission("accesstoken")…');
-          const tokenRequestStarted = Date.now();
-          const tokenTimeoutWarn = setTimeout(()=>{
-            console.warn('[Control Mapper] getPermission("accesstoken") has not resolved OR rejected after 10s — it appears to be hanging, not just slow.');
-          }, 10000);
           api.extension.getPermission('accesstoken').then(function(res){
-            clearTimeout(tokenTimeoutWarn);
-            console.log('[Control Mapper] getPermission("accesstoken") resolved after', Date.now()-tokenRequestStarted, 'ms. Type:', typeof res, 'Length:', res && res.length);
-            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); tryAutoLoadMaster(); tryLoadCompanionPoints(); }
-          }).catch(function(e){
-            clearTimeout(tokenTimeoutWarn);
-            console.warn('[Control Mapper] getPermission("accesstoken") REJECTED after', Date.now()-tokenRequestStarted, 'ms:', e && e.message);
-            /* permission not granted yet; button still works, will retry on click */
-          });
+            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); tryAutoLoadMaster(); }
+          }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
           return api.project.getProject();
         }).then(function(project){
-          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); tryAutoLoadWmts(); tryLoadCompanionPoints(); }
+          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); tryAutoLoadWmts(); }
         }).catch(function(){
           // Not actually running inside Connect, or getProject isn't permitted — stays in standalone mode.
         });
@@ -3216,13 +2934,10 @@
   // chat UI, several regional-host lookups) so starting it early hides
   // most of that latency behind whatever else the user is doing first.
   function prewarmExplorer(){
-    if(explorerReadyPromise) return explorerReadyPromise; // already warming, warm, or already decided not to
+    if(explorerReadyPromise) return explorerReadyPromise; // already warming or warm
     if(!tcAccessToken || !tcProject) return null; // not ready yet, caller can retry later
 
     explorerReadyPromise = (async () => {
-      await ensureHostDetected();
-      console.log('[Control Mapper] prewarmExplorer proceeding — isViewerCompanion:', isViewerCompanion);
-      if(isViewerCompanion) return; // no Browse/Import UI in this mode — nothing to prewarm for, and doing it anyway loads a full nested Connect embed instance inside an already-embedded 3D-viewer extension, which live testing showed can starve/block other work in the tab
       explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
       explorerApi = await TrimbleConnectWorkspace.connect(explorerFrame, onExplorerEvent, 30000);
       await explorerApi.embed.setTokens({ accessToken: tcAccessToken });
@@ -3302,55 +3017,17 @@
     return true;
   }
 
-  function setCompanionStatus(kind, msg){
-    const el = document.getElementById('companionStatus');
-    el.className = 'status-line ' + kind;
-    document.getElementById('companionStatusText').textContent = msg;
-  }
-
   async function tryAutoLoadMaster(){
     if(masterAutoLoadAttempted) return;
     if(!tcProject || !tcAccessToken) return;
     masterAutoLoadAttempted = true;
-
-    await ensureHostDetected();
-    if(isViewerCompanion) return; // companion mode reads points from master_control.ifc instead (loadPointsFromIfcFile) — no need to also fetch the CSV through our own Worker here
-
-    const ref = getSavedMasterRef();
-    if(!ref || !ref.fileId){
-      setCompanionStatus('warn', "No master_control.csv is remembered in this browser yet — deploy it once from Control Mapper's main panel (Project Settings extension) first, then reopen this 3D Viewer panel.");
-      return;
-    }
-
-    setCompanionStatus('warn', 'Loading master_control.csv…');
     try{
       await loadCurrentMaster(false);
-      setCompanionStatus('ok', 'master_control.csv loaded — click a point to select it in the 3D Viewer.');
     }catch(e){
-      // Non-blocking — the remembered file may have been moved/deleted.
+      // Non-blocking — the remembered file may have been moved/deleted;
+      // user can still Browse from Trimble Connect manually.
       console.warn('[Control Mapper] Auto-load of master_control.csv failed:', e.message);
-      setCompanionStatus('err', `Couldn't auto-load master_control.csv (${e.message}).`);
     }
-  }
-
-  let companionLoadAttempted = false;
-  // Called from the same multiple bootstrap trigger points as
-  // tryAutoLoadMaster — necessary because isViewerCompanion (async,
-  // requires ensureHostDetected) and tcAccessToken (a separate async
-  // permission request) don't necessarily both become available at the
-  // same moment. Calling this just once, early, meant it could silently
-  // bail on the "no token yet" check and never get a second chance —
-  // this retries naturally from wherever the bootstrap actually calls it.
-  async function tryLoadCompanionPoints(){
-    if(companionLoadAttempted){ console.log('[Control Mapper] tryLoadCompanionPoints: already attempted, skipping'); return; }
-    await ensureHostDetected();
-    console.log('[Control Mapper] tryLoadCompanionPoints check — isViewerCompanion:', isViewerCompanion, '| tcAccessToken present:', !!tcAccessToken, '| tcProject present:', !!tcProject);
-    if(!isViewerCompanion) return;
-    if(!tcAccessToken) return; // not ready yet — a later trigger point will retry
-    companionLoadAttempted = true;
-    console.log('[Control Mapper] Calling loadPointsFromIfcFile()…');
-    await loadPointsFromIfcFile();
-    console.log('[Control Mapper] loadPointsFromIfcFile() returned.');
   }
 
   // ---------------- Remembering the WMTS base map across sessions ----------------
