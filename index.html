@@ -3032,8 +3032,10 @@
   }
 
   async function loadPointsFromIfcFile(){
-    if(!tcOuterApi || !tcAccessToken) return;
+    console.log('[Control Mapper] loadPointsFromIfcFile() entered.');
+    if(!tcOuterApi || !tcAccessToken){ console.log('[Control Mapper] loadPointsFromIfcFile() bailing — tcOuterApi:', !!tcOuterApi, 'tcAccessToken:', !!tcAccessToken); return; }
     const ref = getSaved3dViewRef('master');
+    console.log('[Control Mapper] getSaved3dViewRef("master"):', JSON.stringify(ref));
     if(!ref || !ref.fileId){
       setCompanionStatus('warn', 'No master_control.ifc is remembered in this browser yet — generate it once via "3D View" → "Master Control" in Control Mapper\'s main panel, then reopen this 3D Viewer panel.');
       return;
@@ -3041,13 +3043,17 @@
 
     setCompanionStatus('warn', 'Reading points from master_control.ifc…');
     try{
+      console.log('[Control Mapper] Fetching /api/download-file for master_control.ifc, fileId:', ref.fileId);
       const res = await fetchWithTimeout(`/api/download-file?fileId=${encodeURIComponent(ref.fileId)}`, {
         headers: { Authorization: `Bearer ${tcAccessToken}` }
       });
+      console.log('[Control Mapper] Fetch returned. ok:', res.ok, 'status:', res.status);
       if(!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
+      console.log('[Control Mapper] Response text length:', text.length);
 
       const points = parseIfcPoints(text);
+      console.log('[Control Mapper] Parsed points:', points.length);
       if(!points.length){
         setCompanionStatus('err', 'master_control.ifc was read, but no point geometry could be parsed from it.');
         return;
@@ -3323,12 +3329,15 @@
   // bail on the "no token yet" check and never get a second chance —
   // this retries naturally from wherever the bootstrap actually calls it.
   async function tryLoadCompanionPoints(){
-    if(companionLoadAttempted) return;
+    if(companionLoadAttempted){ console.log('[Control Mapper] tryLoadCompanionPoints: already attempted, skipping'); return; }
     await ensureHostDetected();
+    console.log('[Control Mapper] tryLoadCompanionPoints check — isViewerCompanion:', isViewerCompanion, '| tcAccessToken present:', !!tcAccessToken, '| tcProject present:', !!tcProject);
     if(!isViewerCompanion) return;
     if(!tcAccessToken) return; // not ready yet — a later trigger point will retry
     companionLoadAttempted = true;
+    console.log('[Control Mapper] Calling loadPointsFromIfcFile()…');
     await loadPointsFromIfcFile();
+    console.log('[Control Mapper] loadPointsFromIfcFile() returned.');
   }
 
   // ---------------- Remembering the WMTS base map across sessions ----------------
