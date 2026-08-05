@@ -2944,7 +2944,6 @@
   function applyCompanionModeUI(){
     if(!isViewerCompanion) return;
     document.body.classList.add('mode-3dviewer');
-    loadPointsFromIfcFile();
   }
 
   document.getElementById('companionRefreshBtn').addEventListener('click', loadPointsFromIfcFile);
@@ -3122,6 +3121,7 @@
             tcAccessToken = data.accessToken;
             prewarmExplorer();
             tryAutoLoadMaster();
+            tryLoadCompanionPoints();
           }
           if(event === 'extension.userSettingsChanged'){
             tcOuterApi && tcOuterApi.project.getProject().then(applyProjectCrsInfo);
@@ -3158,11 +3158,11 @@
           // The user may see a one-time consent prompt inside Connect; the token
           // itself arrives via the extension.accessToken event above.
           api.extension.getPermission('accesstoken').then(function(res){
-            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); tryAutoLoadMaster(); }
+            if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); tryAutoLoadMaster(); tryLoadCompanionPoints(); }
           }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
           return api.project.getProject();
         }).then(function(project){
-          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); tryAutoLoadWmts(); }
+          if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); tryAutoLoadWmts(); tryLoadCompanionPoints(); }
         }).catch(function(){
           // Not actually running inside Connect, or getProject isn't permitted — stays in standalone mode.
         });
@@ -3295,7 +3295,7 @@
     masterAutoLoadAttempted = true;
 
     await ensureHostDetected();
-    if(isViewerCompanion) return; // companion mode reads points directly from the loaded 3D model instead (loadPointsFromViewerModel) — no need to also fetch the CSV through our own Worker here
+    if(isViewerCompanion) return; // companion mode reads points from master_control.ifc instead (loadPointsFromIfcFile) — no need to also fetch the CSV through our own Worker here
 
     const ref = getSavedMasterRef();
     if(!ref || !ref.fileId){
@@ -3312,6 +3312,23 @@
       console.warn('[Control Mapper] Auto-load of master_control.csv failed:', e.message);
       setCompanionStatus('err', `Couldn't auto-load master_control.csv (${e.message}).`);
     }
+  }
+
+  let companionLoadAttempted = false;
+  // Called from the same multiple bootstrap trigger points as
+  // tryAutoLoadMaster — necessary because isViewerCompanion (async,
+  // requires ensureHostDetected) and tcAccessToken (a separate async
+  // permission request) don't necessarily both become available at the
+  // same moment. Calling this just once, early, meant it could silently
+  // bail on the "no token yet" check and never get a second chance —
+  // this retries naturally from wherever the bootstrap actually calls it.
+  async function tryLoadCompanionPoints(){
+    if(companionLoadAttempted) return;
+    await ensureHostDetected();
+    if(!isViewerCompanion) return;
+    if(!tcAccessToken) return; // not ready yet — a later trigger point will retry
+    companionLoadAttempted = true;
+    await loadPointsFromIfcFile();
   }
 
   // ---------------- Remembering the WMTS base map across sessions ----------------
