@@ -3123,7 +3123,9 @@
     s.onload = function(){
       try{
         TrimbleConnectWorkspace.connect(window.parent, function(event, data){
+          console.log('[Control Mapper] Outer connect event:', event);
           if(event === 'extension.accessToken' && data && data.accessToken){
+            console.log('[Control Mapper] Got accessToken via extension.accessToken event.');
             tcAccessToken = data.accessToken;
             prewarmExplorer();
             tryAutoLoadMaster();
@@ -3163,9 +3165,20 @@
           // Ask for an access token up front so Browse from Connect is instant later.
           // The user may see a one-time consent prompt inside Connect; the token
           // itself arrives via the extension.accessToken event above.
+          console.log('[Control Mapper] Calling getPermission("accesstoken")…');
+          const tokenRequestStarted = Date.now();
+          const tokenTimeoutWarn = setTimeout(()=>{
+            console.warn('[Control Mapper] getPermission("accesstoken") has not resolved OR rejected after 10s — it appears to be hanging, not just slow.');
+          }, 10000);
           api.extension.getPermission('accesstoken').then(function(res){
+            clearTimeout(tokenTimeoutWarn);
+            console.log('[Control Mapper] getPermission("accesstoken") resolved after', Date.now()-tokenRequestStarted, 'ms. Type:', typeof res, 'Length:', res && res.length);
             if(typeof res === 'string' && res.length > 20){ tcAccessToken = res; prewarmExplorer(); tryAutoLoadMaster(); tryLoadCompanionPoints(); }
-          }).catch(function(){ /* permission not granted yet; button still works, will retry on click */ });
+          }).catch(function(e){
+            clearTimeout(tokenTimeoutWarn);
+            console.warn('[Control Mapper] getPermission("accesstoken") REJECTED after', Date.now()-tokenRequestStarted, 'ms:', e && e.message);
+            /* permission not granted yet; button still works, will retry on click */
+          });
           return api.project.getProject();
         }).then(function(project){
           if(project){ applyProjectCrsInfo(project); prewarmExplorer(); tryAutoLoadMaster(); tryAutoLoadWmts(); tryLoadCompanionPoints(); }
