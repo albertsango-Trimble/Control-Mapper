@@ -2505,7 +2505,15 @@
       const fileId = uploadData.file && uploadData.file.id;
       if(!fileId) throw new Error('Upload succeeded but no file id came back — check the raw response.');
 
-      const viewerUrl = `https://web.connect.trimble.com/projects/${encodeURIComponent(tcProject.id)}/viewer?id=${encodeURIComponent(fileId)}&version=${encodeURIComponent(fileId)}&type=revisions`;
+      // Confirmed directly from a real URL the user's own browser generated
+      // when opening this exact model manually — /viewer/3d/?modelId=...
+      // is the actual pattern for a supported (3D-capable) file; the
+      // earlier /viewer?id=...&type=revisions guess was wrong (it lands on
+      // the plain Explorer page instead of the 3D viewer). origin is the
+      // same regional host (e.g. app32.connect.trimble.com) already
+      // discovered server-side for the upload, stripped of its protocol.
+      const originHost = (uploadData.host || '').replace(/^https?:\/\//, '');
+      const viewerUrl = `https://web.connect.trimble.com/projects/${encodeURIComponent(tcProject.id)}/viewer/3d/?modelId=${encodeURIComponent(fileId)}&origin=${encodeURIComponent(originHost)}`;
       window.open(viewerUrl, '_blank');
 
       statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
