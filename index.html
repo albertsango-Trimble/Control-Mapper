@@ -2978,12 +2978,35 @@
       const entry = (result || []).find(r => r.modelId === modelId) || (result || [])[0];
       const objects = (entry && entry.objects) || [];
 
-      // Only objects with a Name (our point ID) are candidates — filters
-      // out the spatial-structure entities (Project/Site/Building/Storey)
-      // that don't represent individual points.
-      const named = objects.filter(o => o.product && o.product.name);
+      // Diagnostic — two attempts at guessing where Trimble exposes an
+      // object's own IFC Name attribute (ObjectProperties.position, then
+      // product.name) both came back empty for our CSG geometry. Logging
+      // the raw shape here rather than guessing a third field blind.
+      console.log('[Control Mapper] Raw getObjects() sample (first 3):', JSON.stringify(objects.slice(0,3), null, 2));
+
+      function extractPointName(o){
+        if(o.product && o.product.name) return o.product.name;
+        if(o.product && o.product.description) return o.product.description;
+        if(Array.isArray(o.properties)){
+          for(const pset of o.properties){
+            if(!Array.isArray(pset.properties)) continue;
+            for(const prop of pset.properties){
+              if(prop && /^name$/i.test(prop.name||'') && prop.value != null) return String(prop.value);
+            }
+          }
+        }
+        return null;
+      }
+
+      // Permissive on purpose — rather than fail outright again if none of
+      // the above name sources pan out, fall back to a generic label so
+      // points still show up while the real field gets confirmed from the
+      // logged data above.
+      const named = objects
+        .filter(o => o.id != null)
+        .map(o => ({ obj: o, name: extractPointName(o) || `Point ${o.id}` }));
       if(!named.length){
-        setCompanionStatus('err', `${preferred.name} is loaded, but no named point objects were found in it.`);
+        setCompanionStatus('err', `${preferred.name} is loaded, but no objects at all were returned for it.`);
         return;
       }
 
@@ -2992,20 +3015,20 @@
       // mathematically identical (the centre of gravity), and bounding
       // boxes turned out to be far more reliably populated: position came
       // back empty for our CSG solid geometry specifically, which is why
-      // the earlier attempt found zero usable points.
-      const runtimeIds = named.map(o => o.id);
+      // an earlier attempt found zero usable points.
+      const runtimeIds = named.map(n => n.obj.id);
       const boxes = await tcOuterApi.viewer.getObjectBoundingBoxes(modelId, runtimeIds);
       const boxById = new Map((boxes || []).map(b => [b.id, b.boundingBox]));
 
-      const points = named.map(o => {
-        const box = boxById.get(o.id);
+      const points = named.map(({obj, name}) => {
+        const box = boxById.get(obj.id);
         if(!box) return null;
         return {
-          id: o.product.name,
+          id: name,
           x: (box.min.x + box.max.x) / 2,
           y: (box.min.y + box.max.y) / 2,
           z: (box.min.z + box.max.z) / 2,
-          runtimeId: o.id
+          runtimeId: obj.id
         };
       }).filter(Boolean);
 
