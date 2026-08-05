@@ -418,9 +418,12 @@
   /* Stripped-down UI when running as a 3D Viewer extension — just Import
      and the map; coordinate-system/points-table/deploy management isn't
      relevant to a "click a point, see it selected in 3D" companion. */
+  body.mode-3dviewer #section-upload,
   body.mode-3dviewer #section-crs,
   body.mode-3dviewer #section-points,
   body.mode-3dviewer #section-deploy{ display:none !important; }
+  #companionStatus{ display:none; }
+  body.mode-3dviewer #companionStatus{ display:flex; }
 
   @media (max-width:760px){
     #sidebar{ width:100vw; position:absolute; z-index:1002; height:100vh; }
@@ -514,6 +517,10 @@
           <h1>Control Mapper</h1>
           <p>CSV → geolocated site points</p>
         </div>
+      </div>
+
+      <div id="companionStatus" class="status-line warn" style="margin-top:14px;">
+        <span class="dot"></span><span id="companionStatusText">Loading master_control.csv…</span>
       </div>
 
       <!-- 1. Upload -->
@@ -3087,16 +3094,31 @@
     return true;
   }
 
+  function setCompanionStatus(kind, msg){
+    const el = document.getElementById('companionStatus');
+    el.className = 'status-line ' + kind;
+    document.getElementById('companionStatusText').textContent = msg;
+  }
+
   async function tryAutoLoadMaster(){
     if(masterAutoLoadAttempted) return;
     if(!tcProject || !tcAccessToken) return;
     masterAutoLoadAttempted = true;
+
+    const ref = getSavedMasterRef();
+    if(!ref || !ref.fileId){
+      setCompanionStatus('warn', "No master_control.csv is remembered in this browser yet — deploy it once from Control Mapper's main panel (Project Settings extension) first, then reopen this 3D Viewer panel.");
+      return;
+    }
+
+    setCompanionStatus('warn', 'Loading master_control.csv…');
     try{
       await loadCurrentMaster(false);
+      setCompanionStatus('ok', 'master_control.csv loaded — click a point to select it in the 3D Viewer.');
     }catch(e){
-      // Non-blocking — the remembered file may have been moved/deleted;
-      // user can still Browse from Trimble Connect manually.
+      // Non-blocking — the remembered file may have been moved/deleted.
       console.warn('[Control Mapper] Auto-load of master_control.csv failed:', e.message);
+      setCompanionStatus('err', `Couldn't auto-load master_control.csv (${e.message}).`);
     }
   }
 
