@@ -2483,6 +2483,7 @@
     lines.push(`#${relAgg3}=IFCRELAGGREGATES('${randomIfcGuid()}',${ref(ownerHistId)},$,$,${ref(buildingId)},(${ref(storeyId)}));`);
 
     const proxyIds = [];
+    const shapeRepIds = []; // for IfcPresentationLayerAssignment — layers reference representation items, not the elements themselves
     points.forEach(p=>{
       const z = p.z != null ? p.z : 0;
 
@@ -2514,6 +2515,7 @@
 
       const shapeRepId = next();
       lines.push(`#${shapeRepId}=IFCSHAPEREPRESENTATION(${ref(contextId)},'Body','CSG',(${ref(csgSolidId)}));`);
+      shapeRepIds.push(shapeRepId);
       const prodShapeId = next();
       lines.push(`#${prodShapeId}=IFCPRODUCTDEFINITIONSHAPE($,$,(${ref(shapeRepId)}));`);
 
@@ -2556,6 +2558,16 @@
 
     const relContainId = next();
     lines.push(`#${relContainId}=IFCRELCONTAINEDINSPATIALSTRUCTURE('${randomIfcGuid()}',${ref(ownerHistId)},$,$,(${proxyIds.map(ref).join(',')}),${ref(storeyId)});`);
+
+    // A "Control Points" layer containing every sphere — this is what
+    // populates a Layers panel with toggleable visibility, a distinct
+    // mechanism from the spatial containment tree above (which drives the
+    // Models/object browser tree). IfcPresentationLayerAssignment
+    // references representation ITEMS, not the elements themselves.
+    if(shapeRepIds.length){
+      const layerId = next();
+      lines.push(`#${layerId}=IFCPRESENTATIONLAYERASSIGNMENT('Control Points',$,(${shapeRepIds.map(ref).join(',')}),$);`);
+    }
 
     lines.push("ENDSEC;");
     lines.push("END-ISO-10303-21;");
