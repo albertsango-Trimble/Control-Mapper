@@ -2951,13 +2951,19 @@
   function ensureHostDetected(){
     if(hostDetectPromise) return hostDetectPromise;
     if(!tcOuterApi || typeof tcOuterApi.extension.getHost !== 'function'){
+      console.warn('[Control Mapper] getHost() is not available on this Workspace API — extension.getHost:', tcOuterApi && typeof tcOuterApi.extension.getHost);
       hostDetectPromise = Promise.resolve();
       return hostDetectPromise;
     }
+    console.log('[Control Mapper] Calling getHost()…');
     hostDetectPromise = tcOuterApi.extension.getHost().then(function(host){
+      console.log('[Control Mapper] getHost() resolved:', JSON.stringify(host));
       isViewerCompanion = !!(host && host.name === '3dviewer');
+      console.log('[Control Mapper] isViewerCompanion set to:', isViewerCompanion);
       applyCompanionModeUI();
-    }).catch(function(){ /* older Connect versions may not support getHost — stays in full mode */ });
+    }).catch(function(e){
+      console.warn('[Control Mapper] getHost() rejected — staying in full mode:', e && e.message);
+    });
     return hostDetectPromise;
   }
 
@@ -3052,6 +3058,7 @@
 
     explorerReadyPromise = (async () => {
       await ensureHostDetected();
+      console.log('[Control Mapper] prewarmExplorer proceeding — isViewerCompanion:', isViewerCompanion);
       if(isViewerCompanion) return; // no Browse/Import UI in this mode — nothing to prewarm for, and doing it anyway loads a full nested Connect embed instance inside an already-embedded 3D-viewer extension, which live testing showed can starve/block other work in the tab
       explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
       explorerApi = await TrimbleConnectWorkspace.connect(explorerFrame, onExplorerEvent, 30000);
