@@ -2974,7 +2974,11 @@
       const modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
       setCompanionStatus('warn', `Reading points from ${preferred.name}…`);
 
-      const result = await tcOuterApi.viewer.getObjects({ modelObjectIds: [{ modelId }] });
+      // recursive:true is required here — our spheres sit several levels
+      // deep in the spatial hierarchy (Project > Site > Building > Storey),
+      // not as direct children of the model root, and this flag defaults
+      // to false (direct children only), which was returning zero objects.
+      const result = await tcOuterApi.viewer.getObjects({ modelObjectIds: [{ modelId, recursive: true }] });
       const entry = (result || []).find(r => r.modelId === modelId) || (result || [])[0];
       const objects = (entry && entry.objects) || [];
 
