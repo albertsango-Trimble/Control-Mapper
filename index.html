@@ -2941,6 +2941,25 @@
   let tcOuterApi = null;
   let isViewerCompanion = false; // true when running as a 3D Viewer extension rather than a Project extension
   let tcAccessToken = null;
+  let hostDetectPromise = null;
+
+  // Idempotent — safe to call from multiple places; only ever actually
+  // calls getHost() once. Anything that needs to know isViewerCompanion
+  // reliably should await this first, rather than assuming it's already
+  // resolved by the time they run (getHost() is async, and several
+  // bootstrap triggers can fire before it completes).
+  function ensureHostDetected(){
+    if(hostDetectPromise) return hostDetectPromise;
+    if(!tcOuterApi || typeof tcOuterApi.extension.getHost !== 'function'){
+      hostDetectPromise = Promise.resolve();
+      return hostDetectPromise;
+    }
+    hostDetectPromise = tcOuterApi.extension.getHost().then(function(host){
+      isViewerCompanion = !!(host && host.name === '3dviewer');
+      applyCompanionModeUI();
+    }).catch(function(){ /* older Connect versions may not support getHost — stays in full mode */ });
+    return hostDetectPromise;
+  }
 
   (function connectToTrimble(){
     if(window.parent === window) return; // not embedded, skip
@@ -2966,12 +2985,11 @@
           // (full tool) or embedded inside the 3D Viewer (stripped-down
           // companion: map + auto-loaded master_control, click a point to
           // select the matching sphere in the 3D model alongside it).
-          try{
-            api.extension.getHost().then(function(host){
-              isViewerCompanion = !!(host && host.name === '3dviewer');
-              applyCompanionModeUI();
-            }).catch(function(){ /* older Connect versions may not support getHost — stays in full mode */ });
-          }catch(e){ /* not available */ }
+          // Kicked off here so it starts as early as possible; anything
+          // that depends on knowing isViewerCompanion (like
+          // prewarmExplorer) awaits ensureHostDetected() itself rather
+          // than assuming this has already resolved by the time it runs.
+          ensureHostDetected();
 
           // This is the call that actually puts "Control Mapper" into Connect's
           // left-hand navigation menu. Being enabled in Project Settings >
@@ -3029,10 +3047,12 @@
   // chat UI, several regional-host lookups) so starting it early hides
   // most of that latency behind whatever else the user is doing first.
   function prewarmExplorer(){
-    if(explorerReadyPromise) return explorerReadyPromise; // already warming or warm
+    if(explorerReadyPromise) return explorerReadyPromise; // already warming, warm, or already decided not to
     if(!tcAccessToken || !tcProject) return null; // not ready yet, caller can retry later
 
     explorerReadyPromise = (async () => {
+      await ensureHostDetected();
+      if(isViewerCompanion) return; // no Browse/Import UI in this mode — nothing to prewarm for, and doing it anyway loads a full nested Connect embed instance inside an already-embedded 3D-viewer extension, which live testing showed can starve/block other work in the tab
       explorerFrame.src = TrimbleConnectWorkspace.getConnectEmbedUrl();
       explorerApi = await TrimbleConnectWorkspace.connect(explorerFrame, onExplorerEvent, 30000);
       await explorerApi.embed.setTokens({ accessToken: tcAccessToken });
