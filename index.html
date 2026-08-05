@@ -2464,6 +2464,43 @@
 
   document.getElementById('view3dBtn').addEventListener('click', open3dViewFlow);
 
+  // ---------------- Remembering the last 3D view across sessions ----------------
+  // Lets "3D View" skip a needless re-upload (and the few-minutes Trimble
+  // processing wait) when nothing about the points has actually changed
+  // since the last time — compares a fingerprint of the point data (not
+  // the generated IFC text itself, since that always differs run-to-run
+  // due to embedded GUIDs/timestamps even when the underlying points
+  // haven't changed).
+  function ifc3dViewStorageKey(){
+    return tcProject ? `controlMapper.ifc3dRef.${tcProject.id}` : null;
+  }
+  function save3dViewRef(fileId, folderId, host, fingerprint){
+    const key = ifc3dViewStorageKey();
+    if(!key) return;
+    try{ localStorage.setItem(key, JSON.stringify({ fileId, folderId, host, fingerprint, savedOn: Date.now() })); }
+    catch(e){ /* not critical */ }
+  }
+  function getSaved3dViewRef(){
+    const key = ifc3dViewStorageKey();
+    if(!key) return null;
+    try{ const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
+    catch(e){ return null; }
+  }
+  // Includes the current point-colour preferences too, since those affect
+  // the actual generated spheres — a colour change should count as a
+  // real change, not just point positions/IDs.
+  function pointsFingerprint(points){
+    return JSON.stringify({
+      pts: points.map(p=>[p.id, p.x, p.y, p.z, p.desc, p.source]),
+      mc: MASTER_COLOR, oc: OTHER_COLOR
+    });
+  }
+  function openIfcViewerUrl(fileId, host){
+    const originHost = (host || '').replace(/^https?:\/\//, '');
+    const viewerUrl = `https://web.connect.trimble.com/projects/${encodeURIComponent(tcProject.id)}/viewer/3d/?modelId=${encodeURIComponent(fileId)}&origin=${encodeURIComponent(originHost)}`;
+    window.open(viewerUrl, '_blank');
+  }
+
   async function open3dViewFlow(){
     if(!tcOuterApi || !tcAccessToken || !tcProject){
       alert('Not connected to Trimble Connect — this only works when the extension is running inside a project.');
@@ -2474,8 +2511,20 @@
       alert('No active points to show — import or unflag some points first.');
       return;
     }
-    // Reuse wherever master_control.csv already lives, if known, to avoid
-    // an extra picker step for a quick preview; otherwise ask.
+
+    // Nothing's changed since the last 3D view — just reopen the file
+    // that's already there instead of uploading a redundant new version.
+    const fingerprint = pointsFingerprint(points);
+    const existing = getSaved3dViewRef();
+    if(existing && existing.fileId && existing.fingerprint === fingerprint){
+      document.getElementById('deployStatus').innerHTML =
+        `<div class="status-line ok"><span class="dot"></span><span>No changes since the last 3D view — opening the existing control_points_3d.ifc.</span></div>`;
+      openIfcViewerUrl(existing.fileId, existing.host);
+      return;
+    }
+
+    // Changed (or first time) — reuse wherever master_control.csv already
+    // lives, if known, to avoid an extra picker step; otherwise ask.
     const savedRef = getSavedMasterRef();
     if(savedRef && savedRef.folderId) deploy3dView(savedRef.folderId);
     else openFolderModal('3d-view');
@@ -2505,16 +2554,10 @@
       const fileId = uploadData.file && uploadData.file.id;
       if(!fileId) throw new Error('Upload succeeded but no file id came back — check the raw response.');
 
-      // Confirmed directly from a real URL the user's own browser generated
-      // when opening this exact model manually — /viewer/3d/?modelId=...
-      // is the actual pattern for a supported (3D-capable) file; the
-      // earlier /viewer?id=...&type=revisions guess was wrong (it lands on
-      // the plain Explorer page instead of the 3D viewer). origin is the
-      // same regional host (e.g. app32.connect.trimble.com) already
-      // discovered server-side for the upload, stripped of its protocol.
-      const originHost = (uploadData.host || '').replace(/^https?:\/\//, '');
-      const viewerUrl = `https://web.connect.trimble.com/projects/${encodeURIComponent(tcProject.id)}/viewer/3d/?modelId=${encodeURIComponent(fileId)}&origin=${encodeURIComponent(originHost)}`;
-      window.open(viewerUrl, '_blank');
+      const fingerprint = pointsFingerprint(points);
+      save3dViewRef(fileId, folderId, uploadData.host, fingerprint);
+
+      openIfcViewerUrl(fileId, uploadData.host);
 
       statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
         `Uploaded control_points_3d.ifc (${points.length} spheres, 300mm diameter) and opened the 3D Viewer in a new tab. ` +
