@@ -1220,7 +1220,8 @@
   }
 
   function isMasterSource(source){
-    return (source || '').trim().toLowerCase() === MASTER_FILE_NAME;
+    const s = (source || '').trim().toLowerCase();
+    return s === MASTER_FILE_NAME || s === 'master_control.ifc';
   }
   function colorForSource(source){
     return isMasterSource(source) ? MASTER_COLOR : OTHER_COLOR;
@@ -2943,119 +2944,130 @@
   function applyCompanionModeUI(){
     if(!isViewerCompanion) return;
     document.body.classList.add('mode-3dviewer');
-    loadPointsFromViewerModel();
+    loadPointsFromIfcFile();
   }
 
-  // Reads points directly from whatever IFC model Control Mapper itself
-  // generated and is currently loaded in the 3D Viewer, instead of
-  // re-fetching master_control.csv through our own Worker — this avoids
-  // that pipeline entirely in the companion context, and since
-  // getObjects() already returns each object's runtime ID directly,
-  // clicking a point to select it in 3D no longer needs the GUID
-  // round-trip either.
-  document.getElementById('companionRefreshBtn').addEventListener('click', loadPointsFromViewerModel);
+  document.getElementById('companionRefreshBtn').addEventListener('click', loadPointsFromIfcFile);
 
-  async function loadPointsFromViewerModel(){
-    if(!tcOuterApi) return;
-    try{
-      const models = await tcOuterApi.viewer.getModels('loaded');
-      if(!models || !models.length){
-        setCompanionStatus('warn', 'No 3D model is loaded in the Viewer — add master_control.ifc (or temp_view_control.ifc, generated via "3D View" in the main panel) to this 3D Viewer scene, and its points will appear here.');
-        return;
-      }
-
-      const preferred = models.find(m => /master_control\.ifc$/i.test(m.name||''))
-        || models.find(m => /temp_view_control\.ifc$/i.test(m.name||''));
-      if(!preferred){
-        setCompanionStatus('warn', `Loaded model(s) (${models.map(m=>m.name).join(', ')}) don't look like a Control Mapper IFC — add master_control.ifc to see its points here.`);
-        return;
-      }
-
-      const modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
-      setCompanionStatus('warn', `Reading points from ${preferred.name}…`);
-
-      // recursive:true is required here — our spheres sit several levels
-      // deep in the spatial hierarchy (Project > Site > Building > Storey),
-      // not as direct children of the model root, and this flag defaults
-      // to false (direct children only), which was returning zero objects.
-      const result = await tcOuterApi.viewer.getObjects({ modelObjectIds: [{ modelId, recursive: true }] });
-      const entry = (result || []).find(r => r.modelId === modelId) || (result || [])[0];
-      const objects = (entry && entry.objects) || [];
-
-      // Diagnostic — two attempts at guessing where Trimble exposes an
-      // object's own IFC Name attribute (ObjectProperties.position, then
-      // product.name) both came back empty for our CSG geometry. Logging
-      // the raw shape here rather than guessing a third field blind.
-      console.log('[Control Mapper] Raw getObjects() sample (first 3):', JSON.stringify(objects.slice(0,3), null, 2));
-
-      function extractPointName(o){
-        if(o.product && o.product.name) return o.product.name;
-        if(o.product && o.product.description) return o.product.description;
-        if(Array.isArray(o.properties)){
-          for(const pset of o.properties){
-            if(!Array.isArray(pset.properties)) continue;
-            for(const prop of pset.properties){
-              if(prop && /^name$/i.test(prop.name||'') && prop.value != null) return String(prop.value);
-            }
-          }
+  // ---- Minimal STEP/IFC entity parser, scoped to our own generator's output ----
+  // Not a general-purpose IFC parser — just enough to walk the exact
+  // structure buildIfcText() produces: IfcBuildingElementProxy ->
+  // IfcLocalPlacement -> IfcAxis2Placement3D -> IfcCartesianPoint. Since we
+  // fully control that structure, this is far more tractable (and
+  // reliable) than depending on Trimble's live 3D-viewer API, which
+  // testing showed crashes inside its own hierarchy-walking worker for
+  // this file (a genuine bug on their side, not something fixable from
+  // the API-call side).
+  function parseStepEntities(text){
+    const entities = new Map();
+    const re = /#(\d+)\s*=\s*([A-Z_0-9]+)\s*\(/g;
+    let m;
+    while((m = re.exec(text)) !== null){
+      const id = m[1];
+      const type = m[2];
+      const startParen = m.index + m[0].length - 1;
+      let depth = 0, inQuote = false, i = startParen;
+      for(; i < text.length; i++){
+        const c = text[i];
+        if(c === "'" && text[i-1] !== '\\') inQuote = !inQuote;
+        if(!inQuote){
+          if(c === '(') depth++;
+          else if(c === ')'){ depth--; if(depth === 0) break; }
         }
-        return null;
       }
-
-      // Permissive on purpose — rather than fail outright again if none of
-      // the above name sources pan out, fall back to a generic label so
-      // points still show up while the real field gets confirmed from the
-      // logged data above.
-      const named = objects
-        .filter(o => o.id != null)
-        .map(o => ({ obj: o, name: extractPointName(o) || `Point ${o.id}` }));
-      if(!named.length){
-        setCompanionStatus('err', `${preferred.name} is loaded, but no objects at all were returned for it.`);
-        return;
+      entities.set(id, { type, argsRaw: text.slice(startParen+1, i) });
+    }
+    return entities;
+  }
+  function splitTopLevelArgs(argsRaw){
+    const args = [];
+    let depth = 0, inQuote = false, current = '';
+    for(let i=0; i<argsRaw.length; i++){
+      const c = argsRaw[i];
+      if(c === "'" && argsRaw[i-1] !== '\\') inQuote = !inQuote;
+      if(!inQuote){
+        if(c === '(') depth++;
+        if(c === ')') depth--;
       }
+      if(c === ',' && depth === 0 && !inQuote){ args.push(current.trim()); current = ''; }
+      else current += c;
+    }
+    if(current.trim() !== '') args.push(current.trim());
+    return args;
+  }
+  function ifcRefId(arg){
+    const m = /^#(\d+)$/.exec((arg||'').trim());
+    return m ? m[1] : null;
+  }
+  function parseIfcPoints(text){
+    const entities = parseStepEntities(text);
+    const points = [];
+    for(const [, {type, argsRaw}] of entities){
+      if(type !== 'IFCBUILDINGELEMENTPROXY') continue;
+      const args = splitTopLevelArgs(argsRaw);
+      const nameArg = args[2];
+      const name = (nameArg && nameArg.startsWith("'")) ? nameArg.slice(1,-1).replace(/''/g,"'") : nameArg;
 
-      // Position comes from each sphere's bounding-box centre rather than
-      // ObjectProperties.position — for a perfect sphere the two are
-      // mathematically identical (the centre of gravity), and bounding
-      // boxes turned out to be far more reliably populated: position came
-      // back empty for our CSG solid geometry specifically, which is why
-      // an earlier attempt found zero usable points.
-      const runtimeIds = named.map(n => n.obj.id);
-      const boxes = await tcOuterApi.viewer.getObjectBoundingBoxes(modelId, runtimeIds);
-      const boxById = new Map((boxes || []).map(b => [b.id, b.boundingBox]));
+      const placementId = ifcRefId(args[5]);
+      const placementEnt = placementId && entities.get(placementId);
+      if(!placementEnt || placementEnt.type !== 'IFCLOCALPLACEMENT') continue;
+      const placementArgs = splitTopLevelArgs(placementEnt.argsRaw);
 
-      const points = named.map(({obj, name}) => {
-        const box = boxById.get(obj.id);
-        if(!box) return null;
-        return {
-          id: name,
-          x: (box.min.x + box.max.x) / 2,
-          y: (box.min.y + box.max.y) / 2,
-          z: (box.min.z + box.max.z) / 2,
-          runtimeId: obj.id
-        };
-      }).filter(Boolean);
+      const axisId = ifcRefId(placementArgs[1]);
+      const axisEnt = axisId && entities.get(axisId);
+      if(!axisEnt || axisEnt.type !== 'IFCAXIS2PLACEMENT3D') continue;
+      const axisArgs = splitTopLevelArgs(axisEnt.argsRaw);
 
+      const locId = ifcRefId(axisArgs[0]);
+      const locEnt = locId && entities.get(locId);
+      if(!locEnt || locEnt.type !== 'IFCCARTESIANPOINT') continue;
+      const locArgs = splitTopLevelArgs(locEnt.argsRaw);
+
+      const coordsStr = locArgs[0].replace(/^\(/,'').replace(/\)$/,'');
+      const coords = coordsStr.split(',').map(s=>parseFloat(s.trim()));
+      if(coords.length < 2 || isNaN(coords[0]) || isNaN(coords[1])) continue;
+
+      points.push({ id: name, x: coords[0], y: coords[1], z: coords.length>2 && !isNaN(coords[2]) ? coords[2] : null });
+    }
+    return points;
+  }
+
+  async function loadPointsFromIfcFile(){
+    if(!tcOuterApi || !tcAccessToken) return;
+    const ref = getSaved3dViewRef('master');
+    if(!ref || !ref.fileId){
+      setCompanionStatus('warn', 'No master_control.ifc is remembered in this browser yet — generate it once via "3D View" → "Master Control" in Control Mapper\'s main panel, then reopen this 3D Viewer panel.');
+      return;
+    }
+
+    setCompanionStatus('warn', 'Reading points from master_control.ifc…');
+    try{
+      const res = await fetchWithTimeout(`/api/download-file?fileId=${encodeURIComponent(ref.fileId)}`, {
+        headers: { Authorization: `Bearer ${tcAccessToken}` }
+      });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+
+      const points = parseIfcPoints(text);
       if(!points.length){
-        setCompanionStatus('err', `${preferred.name} is loaded, but no bounding-box geometry could be read for its points.`);
+        setCompanionStatus('err', 'master_control.ifc was read, but no point geometry could be parsed from it.');
         return;
       }
 
-      // A refresh should cleanly reflect the model's current state, not
+      // A refresh should cleanly reflect the file's current state, not
       // merge against whatever was there before — clearing first also
       // sidesteps the duplicate-ID conflict modal, which doesn't fit this
       // stripped-down companion UI.
       clearPointsKeepGeoref();
       const synthHeaders = ['Column 1','Column 2','Column 3','Column 4','Column 5'];
       const rows = points.map(p => ({
-        'Column 1': p.id, 'Column 2': p.x, 'Column 3': p.y, 'Column 4': p.z, 'Column 5': '',
-        __viewerRuntimeId: p.runtimeId, __viewerModelId: modelId
+        'Column 1': p.id, 'Column 2': p.x, 'Column 3': p.y, 'Column 4': p.z != null ? p.z : '', 'Column 5': ''
       }));
-      mergeRows(synthHeaders, rows, preferred.name);
+      mergeRows(synthHeaders, rows, 'master_control.ifc');
 
-      setCompanionStatus('ok', `${points.length} points loaded from ${preferred.name} — click a point to select it in the 3D Viewer.`);
+      setCompanionStatus('ok', `${points.length} points loaded from master_control.ifc — click a point to select it in the 3D Viewer.`);
     }catch(e){
-      setCompanionStatus('err', `Couldn't read points from the 3D Viewer (${e.message}).`);
+      setCompanionStatus('err', `Couldn't read master_control.ifc (${e.message}).`);
     }
   }
 
