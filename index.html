@@ -748,6 +748,24 @@
     </div>
   </div>
 
+  <div id="view3dChoiceModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="height:auto; max-height:80vh; width:min(420px, 92vw);">
+      <div class="modal-head">
+        <span>3D View</span>
+        <button id="view3dChoiceClose" class="pick-btn" title="Close">✕</button>
+      </div>
+      <div style="padding:16px;">
+        <p class="hint" style="margin:0 0 14px;">Which points should the 3D view show?</p>
+        <button class="btn primary full" id="view3dChoiceMaster" style="margin-bottom:10px; text-align:left; padding:12px 14px;">
+          Master Control<br><span style="font-weight:400; font-size:11.5px; opacity:.85;">Only points sourced from master_control.csv → master_control.ifc</span>
+        </button>
+        <button class="btn full" id="view3dChoiceCurrent" style="text-align:left; padding:12px 14px;">
+          Current View<br><span style="font-weight:400; font-size:11.5px; color:var(--ink-dim);">Everything currently active on the map → temp_view_control.ifc</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -2108,7 +2126,7 @@
   // ---------------- Deploy: folder browser + upload + tag ----------------
   let folderPath = []; // [{id, name}]
   let currentFolderItems = [];
-  let folderPickerPurpose = 'master-csv'; // 'master-csv' | '3d-view'
+  let folderPickerPurpose = 'master-csv'; // 'master-csv' | '3d-view-master' | '3d-view-current'
 
   document.getElementById('deployBtn').addEventListener('click', ()=>openFolderModal('master-csv'));
   document.getElementById('folderModalClose').addEventListener('click', ()=>{
@@ -2206,7 +2224,7 @@
   document.getElementById('folderUseHereBtn').addEventListener('click', ()=>{
     const target = folderPath[folderPath.length-1];
     document.getElementById('folderModal').style.display = 'none';
-    if(folderPickerPurpose === '3d-view') deploy3dView(target.id);
+    if(folderPickerPurpose.startsWith('3d-view-')) deploy3dView(target.id, folderPickerPurpose.slice('3d-view-'.length));
     else deployMasterCsv(target.id);
   });
 
@@ -2462,7 +2480,26 @@
     return lines.join('\n');
   }
 
-  document.getElementById('view3dBtn').addEventListener('click', open3dViewFlow);
+  document.getElementById('view3dBtn').addEventListener('click', openView3dChoiceModal);
+  document.getElementById('view3dChoiceClose').addEventListener('click', ()=>{
+    document.getElementById('view3dChoiceModal').style.display = 'none';
+  });
+  document.getElementById('view3dChoiceMaster').addEventListener('click', ()=>{
+    document.getElementById('view3dChoiceModal').style.display = 'none';
+    open3dViewFlow('master');
+  });
+  document.getElementById('view3dChoiceCurrent').addEventListener('click', ()=>{
+    document.getElementById('view3dChoiceModal').style.display = 'none';
+    open3dViewFlow('current');
+  });
+
+  function openView3dChoiceModal(){
+    if(!tcOuterApi || !tcAccessToken || !tcProject){
+      alert('Not connected to Trimble Connect — this only works when the extension is running inside a project.');
+      return;
+    }
+    document.getElementById('view3dChoiceModal').style.display = 'flex';
+  }
 
   // ---------------- Remembering the last 3D view across sessions ----------------
   // Lets "3D View" skip a needless re-upload (and the few-minutes Trimble
@@ -2470,18 +2507,24 @@
   // since the last time — compares a fingerprint of the point data (not
   // the generated IFC text itself, since that always differs run-to-run
   // due to embedded GUIDs/timestamps even when the underlying points
-  // haven't changed).
-  function ifc3dViewStorageKey(){
-    return tcProject ? `controlMapper.ifc3dRef.${tcProject.id}` : null;
+  // haven't changed). Master Control and Current View are tracked
+  // independently, since they're different files with different content.
+  const VIEW3D_MODES = {
+    master:  { fileName: 'master_control.ifc',     label: 'master_control.ifc' },
+    current: { fileName: 'temp_view_control.ifc',  label: 'temp_view_control.ifc' }
+  };
+
+  function ifc3dViewStorageKey(mode){
+    return tcProject ? `controlMapper.ifc3dRef.${mode}.${tcProject.id}` : null;
   }
-  function save3dViewRef(fileId, folderId, host, fingerprint){
-    const key = ifc3dViewStorageKey();
+  function save3dViewRef(mode, fileId, folderId, host, fingerprint){
+    const key = ifc3dViewStorageKey(mode);
     if(!key) return;
     try{ localStorage.setItem(key, JSON.stringify({ fileId, folderId, host, fingerprint, savedOn: Date.now() })); }
     catch(e){ /* not critical */ }
   }
-  function getSaved3dViewRef(){
-    const key = ifc3dViewStorageKey();
+  function getSaved3dViewRef(mode){
+    const key = ifc3dViewStorageKey(mode);
     if(!key) return null;
     try{ const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
     catch(e){ return null; }
@@ -2501,24 +2544,28 @@
     window.open(viewerUrl, '_blank');
   }
 
-  async function open3dViewFlow(){
-    if(!tcOuterApi || !tcAccessToken || !tcProject){
-      alert('Not connected to Trimble Connect — this only works when the extension is running inside a project.');
-      return;
-    }
-    const points = getPoints().filter(p=>p.valid && !p.destroyed);
+  function pointsForMode(mode){
+    const all = getPoints().filter(p=>p.valid && !p.destroyed);
+    return mode === 'master' ? all.filter(p=>isMasterSource(p.source)) : all;
+  }
+
+  async function open3dViewFlow(mode){
+    const points = pointsForMode(mode);
     if(!points.length){
-      alert('No active points to show — import or unflag some points first.');
+      alert(mode === 'master'
+        ? 'No active master_control.csv points to show — deploy or import master_control.csv first.'
+        : 'No active points to show — import or unflag some points first.');
       return;
     }
 
-    // Nothing's changed since the last 3D view — just reopen the file
-    // that's already there instead of uploading a redundant new version.
+    // Nothing's changed since the last 3D view in this mode — just reopen
+    // the file that's already there instead of uploading a redundant new
+    // version.
     const fingerprint = pointsFingerprint(points);
-    const existing = getSaved3dViewRef();
+    const existing = getSaved3dViewRef(mode);
     if(existing && existing.fileId && existing.fingerprint === fingerprint){
       document.getElementById('deployStatus').innerHTML =
-        `<div class="status-line ok"><span class="dot"></span><span>No changes since the last 3D view — opening the existing control_points_3d.ifc.</span></div>`;
+        `<div class="status-line ok"><span class="dot"></span><span>No changes since the last 3D view — opening the existing ${VIEW3D_MODES[mode].label}.</span></div>`;
       openIfcViewerUrl(existing.fileId, existing.host);
       return;
     }
@@ -2526,14 +2573,15 @@
     // Changed (or first time) — reuse wherever master_control.csv already
     // lives, if known, to avoid an extra picker step; otherwise ask.
     const savedRef = getSavedMasterRef();
-    if(savedRef && savedRef.folderId) deploy3dView(savedRef.folderId);
-    else openFolderModal('3d-view');
+    if(savedRef && savedRef.folderId) deploy3dView(savedRef.folderId, mode);
+    else openFolderModal('3d-view-' + mode);
   }
 
-  async function deploy3dView(folderId){
+  async function deploy3dView(folderId, mode){
     const statusEl = document.getElementById('deployStatus');
-    const points = getPoints().filter(p=>p.valid && !p.destroyed);
-    statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Building IFC (${points.length} spheres) and uploading…</span></div>`;
+    const points = pointsForMode(mode);
+    const fileName = VIEW3D_MODES[mode].fileName;
+    statusEl.innerHTML = `<div class="status-line warn"><span class="dot"></span><span>Building ${fileName} (${points.length} spheres) and uploading…</span></div>`;
 
     try{
       const ifcText = buildIfcText(points, 300);
@@ -2545,7 +2593,7 @@
           projectId: tcProject.id,
           parentId: folderId,
           parentType: 'FOLDER',
-          fileName: 'control_points_3d.ifc',
+          fileName: fileName,
           content: ifcText
         })
       });
@@ -2555,12 +2603,12 @@
       if(!fileId) throw new Error('Upload succeeded but no file id came back — check the raw response.');
 
       const fingerprint = pointsFingerprint(points);
-      save3dViewRef(fileId, folderId, uploadData.host, fingerprint);
+      save3dViewRef(mode, fileId, folderId, uploadData.host, fingerprint);
 
       openIfcViewerUrl(fileId, uploadData.host);
 
       statusEl.innerHTML = `<div class="status-line ok"><span class="dot"></span><span>` +
-        `Uploaded control_points_3d.ifc (${points.length} spheres, 300mm diameter) and opened the 3D Viewer in a new tab. ` +
+        `Uploaded ${fileName} (${points.length} spheres, 300mm diameter) and opened the 3D Viewer in a new tab. ` +
         `<b>Trimble Connect needs a few minutes to process a newly uploaded IFC file</b> before the spheres actually render — if the viewer looks empty at first, wait a bit and refresh that tab.` +
         `</span></div>`;
     }catch(e){
