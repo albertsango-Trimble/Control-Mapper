@@ -2326,6 +2326,8 @@
     const next = () => ++id;
     const ref = (n) => `#${n}`;
     const styleIdByColor = new Map(); // hex -> IfcSurfaceStyle entity id, so points sharing a colour reuse one style
+    const materialIdByColor = new Map(); // hex -> IfcMaterial entity id
+    const proxyIdsByColor = new Map(); // hex -> [proxy entity ids], to batch one IfcRelAssociatesMaterial per colour
 
     function getOrCreateStyle(hexColor){
       if(styleIdByColor.has(hexColor)) return styleIdByColor.get(hexColor);
@@ -2338,6 +2340,27 @@
       lines.push(`#${styleId}=IFCSURFACESTYLE($,.BOTH.,(${ref(shadingId)}));`);
       styleIdByColor.set(hexColor, styleId);
       return styleId;
+    }
+
+    // Material-based colouring — this is the convention most authoring
+    // tools (Revit, Tekla, ArchiCAD) actually use, and the one most
+    // viewers are built to read first. Added after live testing showed
+    // the direct IfcStyledItem-on-CSG-solid approach above (which is
+    // spec-valid, confirmed via ifcopenshell) wasn't being picked up by
+    // Trimble's own renderer specifically for CSG sphere geometry — kept
+    // both mechanisms in since the styled-item one may still help other
+    // viewers/representation types.
+    function getOrCreateMaterial(hexColor){
+      if(materialIdByColor.has(hexColor)) return materialIdByColor.get(hexColor);
+      const styleId = getOrCreateStyle(hexColor);
+      const materialId = next();
+      lines.push(`#${materialId}=IFCMATERIAL('Point colour ${hexColor}',$,$);`);
+      const styledRepId = next();
+      lines.push(`#${styledRepId}=IFCSTYLEDREPRESENTATION(${ref(contextId)},'Style','Material',(${ref(styleId)}));`);
+      const matDefRepId = next();
+      lines.push(`#${matDefRepId}=IFCMATERIALDEFINITIONREPRESENTATION($,$,(${ref(styledRepId)}),${ref(materialId)});`);
+      materialIdByColor.set(hexColor, materialId);
+      return materialId;
     }
 
     lines.push("ISO-10303-21;");
@@ -2436,8 +2459,13 @@
       // Colour the sphere to match whatever this point shows as on the 2D
       // map — same colorForSource() logic used there, so master_control
       // points and other-CSV points stay visually consistent between the
-      // map and the 3D view.
-      const styleId = getOrCreateStyle(colorForSource(p.source));
+      // map and the 3D view. Two mechanisms are used together (styled item
+      // + material association) since live testing showed Trimble's
+      // renderer wasn't picking up the direct styled-item colouring on CSG
+      // sphere geometry specifically.
+      const color = colorForSource(p.source);
+      const styleId = getOrCreateStyle(color);
+      getOrCreateMaterial(color); // pre-create; proxy gets associated after we know its id below
       const styledItemId = next();
       lines.push(`#${styledItemId}=IFCSTYLEDITEM(${ref(csgSolidId)},(${ref(styleId)}),$);`);
 
@@ -2469,6 +2497,18 @@
       const name = String(p.id||'').replace(/'/g,'-').replace(/[\r\n]/g,' ').replace(/[^\x20-\x7E]/g,'?');
       lines.push(`#${proxyId}=IFCBUILDINGELEMENTPROXY('${randomIfcGuid()}',${ref(ownerHistId)},'${name}',$,$,${ref(localPlacementId)},${ref(prodShapeId)},$,$);`);
       proxyIds.push(proxyId);
+
+      if(!proxyIdsByColor.has(color)) proxyIdsByColor.set(color, []);
+      proxyIdsByColor.get(color).push(proxyId);
+    });
+
+    // One IfcRelAssociatesMaterial per colour, listing every proxy that
+    // shares it — mirrors the style/material dedup above rather than
+    // emitting a separate relationship per point.
+    proxyIdsByColor.forEach((ids, color)=>{
+      const materialId = getOrCreateMaterial(color);
+      const relMatId = next();
+      lines.push(`#${relMatId}=IFCRELASSOCIATESMATERIAL('${randomIfcGuid()}',${ref(ownerHistId)},$,$,(${ids.map(ref).join(',')}),${ref(materialId)});`);
     });
 
     const relContainId = next();
