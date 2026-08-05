@@ -47,7 +47,7 @@ async function resolveContent(bodyBuffer, auth) {
           for (let i = parsed.length - 1; i >= 0; i--) {
             const innerUrl = pointerFrom(parsed[i]);
             if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
-              const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
+              const innerRes = await fetchWithTimeout(innerUrl, { headers: { Authorization: auth } });
               if (innerRes.ok) return await innerRes.arrayBuffer();
             }
           }
@@ -56,7 +56,7 @@ async function resolveContent(bodyBuffer, auth) {
 
         const innerUrl = pointerFrom(parsed);
         if (typeof innerUrl === 'string' && innerUrl.startsWith('http')) {
-          const innerRes = await fetch(innerUrl, { headers: { Authorization: auth } });
+          const innerRes = await fetchWithTimeout(innerUrl, { headers: { Authorization: auth } });
           if (innerRes.ok) return await innerRes.arrayBuffer();
         }
         return null; // parsed as JSON but no usable pointer in it
@@ -102,7 +102,7 @@ async function handleProxyFetch(url) {
   }
 
   try {
-    const res = await fetch(parsed.toString(), { headers: { Accept: 'application/xml, text/xml, */*' } });
+    const res = await fetchWithTimeout(parsed.toString(), { headers: { Accept: 'application/xml, text/xml, */*' } });
     const text = await res.text();
     if (text.length > 3_000_000) {
       return new Response('Response too large', { status: 502, headers: CORS_HEADERS });
@@ -120,14 +120,24 @@ async function handleProxyFetch(url) {
 // project's own metadata alongside it (rootId is needed for the folder
 // browser; name is just for display). Reused by all three new endpoints
 // below so every call in one deploy operation lands on the same host.
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 8000);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function discoverHost(auth, projectId) {
   for (const host of CANDIDATE_HOSTS) {
     try {
-      const res = await fetch(`${host}/tc/api/2.0/projects/${encodeURIComponent(projectId)}`, {
+      const res = await fetchWithTimeout(`${host}/tc/api/2.0/projects/${encodeURIComponent(projectId)}`, {
         headers: { Authorization: auth }
-      });
+      }, 8000);
       if (res.ok) return { host, project: await res.json() };
-    } catch { /* try next host */ }
+    } catch { /* try next host — includes timeouts, not just network errors */ }
   }
   return null;
 }
@@ -148,7 +158,7 @@ async function handleListFolder(request, url) {
   const targetFolderId = folderId || project.rootId;
 
   try {
-    const res = await fetch(`${host}/tc/api/2.0/folders/${encodeURIComponent(targetFolderId)}/items`, {
+    const res = await fetchWithTimeout(`${host}/tc/api/2.0/folders/${encodeURIComponent(targetFolderId)}/items`, {
       headers: { Authorization: auth }
     });
     if (!res.ok) {
@@ -189,7 +199,7 @@ async function handleListVersions(request, url) {
   const { host } = discovered;
 
   try {
-    const res = await fetch(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions`, {
+    const res = await fetchWithTimeout(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}/versions`, {
       headers: { Authorization: auth }
     });
     if (!res.ok) {
@@ -236,7 +246,7 @@ async function handleUploadFile(request) {
   try {
     // Step 1: initiate — tells Trimble Connect a file is coming and gets
     // back a short-lived signed URL to PUT the actual bytes to.
-    const initiateRes = await fetch(`${host}/tc/api/2.0/files/fs/initiate`, {
+    const initiateRes = await fetchWithTimeout(`${host}/tc/api/2.0/files/fs/initiate`, {
       method: 'POST',
       headers: { Authorization: auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ parentId, parentType: parentType || 'FOLDER', name: fileName })
@@ -250,14 +260,14 @@ async function handleUploadFile(request) {
     // Step 2: PUT the raw bytes directly to that signed URL (not Trimble's
     // API host — this is typically direct-to-blob-storage, so no auth
     // header here).
-    const putRes = await fetch(initiateData.uploadURL, { method: 'PUT', body: content });
+    const putRes = await fetchWithTimeout(initiateData.uploadURL, { method: 'PUT', body: content });
     if (!putRes.ok) {
       const t = await putRes.text().catch(() => '');
       return new Response(`upload PUT failed: HTTP ${putRes.status} ${t}`, { status: 502, headers: CORS_HEADERS });
     }
 
     // Step 3: commit — finalizes the upload into an actual file record.
-    const commitRes = await fetch(`${host}/tc/api/2.0/files/fs/commit`, {
+    const commitRes = await fetchWithTimeout(`${host}/tc/api/2.0/files/fs/commit`, {
       method: 'POST',
       headers: { Authorization: auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ uploadId: initiateData.uploadId })
@@ -293,7 +303,7 @@ async function handleTagFile(request) {
   const TAG_LABEL = 'TrimbleAccess.ProjectFile';
 
   try {
-    const listRes = await fetch(`${host}/tc/api/2.0/tags?projectId=${encodeURIComponent(projectId)}`, {
+    const listRes = await fetchWithTimeout(`${host}/tc/api/2.0/tags?projectId=${encodeURIComponent(projectId)}`, {
       headers: { Authorization: auth }
     });
     if (!listRes.ok) {
@@ -304,7 +314,7 @@ async function handleTagFile(request) {
     let tag = Array.isArray(tags) ? tags.find(t => t.label === TAG_LABEL) : null;
 
     if (!tag) {
-      const createRes = await fetch(`${host}/tc/api/2.0/tags`, {
+      const createRes = await fetchWithTimeout(`${host}/tc/api/2.0/tags`, {
         method: 'POST',
         headers: { Authorization: auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({ label: TAG_LABEL, projectId })
@@ -316,7 +326,7 @@ async function handleTagFile(request) {
       tag = await createRes.json();
     }
 
-    const attachRes = await fetch(`${host}/tc/api/2.0/tags/${encodeURIComponent(tag.id)}/objects`, {
+    const attachRes = await fetchWithTimeout(`${host}/tc/api/2.0/tags/${encodeURIComponent(tag.id)}/objects`, {
       method: 'POST',
       headers: { Authorization: auth, 'Content-Type': 'application/json' },
       body: JSON.stringify([{ id: fileId, objectType: 'FILE' }])
@@ -431,7 +441,7 @@ async function handleDownload(request, url) {
       const metaUrl = new URL(`${host}/tc/api/2.0/files/${encodeURIComponent(fileId)}`);
       if (versionId) metaUrl.searchParams.set('versionId', versionId);
 
-      const metaRes = await fetch(metaUrl.toString(), {
+      const metaRes = await fetchWithTimeout(metaUrl.toString(), {
         headers: { Authorization: auth }
       });
 
@@ -462,12 +472,12 @@ async function handleDownload(request, url) {
       for (const path of candidatePaths) {
         const candidateUrl = `${host}${path}`;
         try {
-          let candRes = await fetch(candidateUrl, { headers: { Authorization: auth } });
+          let candRes = await fetchWithTimeout(candidateUrl, { headers: { Authorization: auth } });
           if (candRes.status === 400) {
             // A 400 (vs 404) means the route exists but rejected this
             // specific request — commonly a missing Accept header on
             // content/download endpoints. Worth one retry before giving up.
-            candRes = await fetch(candidateUrl, {
+            candRes = await fetchWithTimeout(candidateUrl, {
               headers: { Authorization: auth, Accept: 'application/octet-stream, text/csv, */*' }
             });
           }
@@ -500,7 +510,7 @@ async function handleDownload(request, url) {
         meta?.versions?.[meta.versions.length - 1]?.url;
 
       if (downloadUrl) {
-        const fileRes = await fetch(downloadUrl, { headers: { Authorization: auth } });
+        const fileRes = await fetchWithTimeout(downloadUrl, { headers: { Authorization: auth } });
         if (fileRes.ok) {
           const buf = await fileRes.arrayBuffer();
           return new Response(buf, {
