@@ -424,6 +424,8 @@
   body.mode-3dviewer #section-deploy{ display:none !important; }
   #companionStatus{ display:none; }
   body.mode-3dviewer #companionStatus{ display:flex; }
+  #companionRefreshBtn{ display:none; }
+  body.mode-3dviewer #companionRefreshBtn{ display:block; }
 
   @media (max-width:760px){
     #sidebar{ width:100vw; position:absolute; z-index:1002; height:100vh; }
@@ -520,8 +522,9 @@
       </div>
 
       <div id="companionStatus" class="status-line warn" style="margin-top:14px;">
-        <span class="dot"></span><span id="companionStatusText">Loading master_control.csv…</span>
+        <span class="dot"></span><span id="companionStatusText">Reading points from the 3D Viewer…</span>
       </div>
+      <button class="btn full small" id="companionRefreshBtn" style="margin-top:8px;">Refresh from 3D Viewer</button>
 
       <!-- 1. Upload -->
       <div class="section" id="section-upload">
@@ -1694,7 +1697,12 @@
         x, y, z: isNaN(z) ? null : z,
         valid: !isNaN(x) && !isNaN(y),
         destroyed: !!row.__destroyed,
-        source: row.__source || ''
+        source: row.__source || '',
+        // Set only for points read directly from a loaded 3D model (the
+        // viewer-companion path) — lets selectPointInViewer skip the
+        // GUID round-trip entirely and select immediately.
+        viewerRuntimeId: row.__viewerRuntimeId,
+        viewerModelId: row.__viewerModelId
       };
     });
   }
@@ -2388,22 +2396,32 @@
   async function selectPointInViewer(p){
     if(!tcOuterApi || !tcProject) return;
     try{
-      const models = await tcOuterApi.viewer.getModels('loaded');
-      if(!models || !models.length){
-        setViewerSelectStatus('err', 'No 3D model is loaded in the viewer to select against.');
-        return;
-      }
-      // Prefer a model this tool itself generated; fall back to whatever's loaded.
-      const preferred = models.find(m => /(?:^|\/)(master_control|temp_view_control)\.ifc$/i.test(m.name || '')) || models[0];
-      const modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
+      let modelId, runtimeId;
 
-      const externalId = pointExternalId(p.id, tcProject.id);
-      const runtimeIds = await tcOuterApi.viewer.convertToObjectRuntimeIds(modelId, [externalId]);
-      const runtimeId = runtimeIds && runtimeIds[0];
-      if(runtimeId == null){
-        setViewerSelectStatus('err', `Couldn't find "${p.id}" in the loaded 3D model — it may not be processed yet, or doesn't match what's currently loaded.`);
-        return;
+      if(p.viewerRuntimeId != null && p.viewerModelId){
+        // Fast path — point was read directly from the loaded model
+        // (loadPointsFromViewerModel), so we already have everything
+        // needed and can skip the GUID lookup entirely.
+        modelId = p.viewerModelId;
+        runtimeId = p.viewerRuntimeId;
+      } else {
+        const models = await tcOuterApi.viewer.getModels('loaded');
+        if(!models || !models.length){
+          setViewerSelectStatus('err', 'No 3D model is loaded in the viewer to select against.');
+          return;
+        }
+        const preferred = models.find(m => /(?:^|\/)(master_control|temp_view_control)\.ifc$/i.test(m.name || '')) || models[0];
+        modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
+
+        const externalId = pointExternalId(p.id, tcProject.id);
+        const runtimeIds = await tcOuterApi.viewer.convertToObjectRuntimeIds(modelId, [externalId]);
+        runtimeId = runtimeIds && runtimeIds[0];
+        if(runtimeId == null){
+          setViewerSelectStatus('err', `Couldn't find "${p.id}" in the loaded 3D model — it may not be processed yet, or doesn't match what's currently loaded.`);
+          return;
+        }
       }
+
       const selector = { modelObjectIds:[{ modelId, objectRuntimeIds:[runtimeId] }] };
       await tcOuterApi.viewer.setSelection(selector, 'set');
       await tcOuterApi.viewer.setCamera(selector).catch(()=>{}); // fly to it too; non-fatal if unsupported
@@ -2925,6 +2943,66 @@
   function applyCompanionModeUI(){
     if(!isViewerCompanion) return;
     document.body.classList.add('mode-3dviewer');
+    loadPointsFromViewerModel();
+  }
+
+  // Reads points directly from whatever IFC model Control Mapper itself
+  // generated and is currently loaded in the 3D Viewer, instead of
+  // re-fetching master_control.csv through our own Worker — this avoids
+  // that pipeline entirely in the companion context, and since
+  // getObjects() already returns each object's runtime ID directly,
+  // clicking a point to select it in 3D no longer needs the GUID
+  // round-trip either.
+  document.getElementById('companionRefreshBtn').addEventListener('click', loadPointsFromViewerModel);
+
+  async function loadPointsFromViewerModel(){
+    if(!tcOuterApi) return;
+    try{
+      const models = await tcOuterApi.viewer.getModels('loaded');
+      if(!models || !models.length){
+        setCompanionStatus('warn', 'No 3D model is loaded in the Viewer — add master_control.ifc (or temp_view_control.ifc, generated via "3D View" in the main panel) to this 3D Viewer scene, and its points will appear here.');
+        return;
+      }
+
+      const preferred = models.find(m => /master_control\.ifc$/i.test(m.name||''))
+        || models.find(m => /temp_view_control\.ifc$/i.test(m.name||''));
+      if(!preferred){
+        setCompanionStatus('warn', `Loaded model(s) (${models.map(m=>m.name).join(', ')}) don't look like a Control Mapper IFC — add master_control.ifc to see its points here.`);
+        return;
+      }
+
+      const modelId = preferred.versionId || preferred.id; // ModelObjectIds.modelId == File.versionId, per the Workspace API docs
+      setCompanionStatus('warn', `Reading points from ${preferred.name}…`);
+
+      const result = await tcOuterApi.viewer.getObjects({ modelObjectIds: [{ modelId }] });
+      const entry = (result || []).find(r => r.modelId === modelId) || (result || [])[0];
+      const objects = (entry && entry.objects) || [];
+
+      const points = objects
+        .filter(o => o.position && o.product && o.product.name)
+        .map(o => ({ id: o.product.name, x: o.position.x, y: o.position.y, z: o.position.z, runtimeId: o.id }));
+
+      if(!points.length){
+        setCompanionStatus('err', `${preferred.name} is loaded, but no point objects were found in it.`);
+        return;
+      }
+
+      // A refresh should cleanly reflect the model's current state, not
+      // merge against whatever was there before — clearing first also
+      // sidesteps the duplicate-ID conflict modal, which doesn't fit this
+      // stripped-down companion UI.
+      clearPointsKeepGeoref();
+      const synthHeaders = ['Column 1','Column 2','Column 3','Column 4','Column 5'];
+      const rows = points.map(p => ({
+        'Column 1': p.id, 'Column 2': p.x, 'Column 3': p.y, 'Column 4': p.z, 'Column 5': '',
+        __viewerRuntimeId: p.runtimeId, __viewerModelId: modelId
+      }));
+      mergeRows(synthHeaders, rows, preferred.name);
+
+      setCompanionStatus('ok', `${points.length} points loaded from ${preferred.name} — click a point to select it in the 3D Viewer.`);
+    }catch(e){
+      setCompanionStatus('err', `Couldn't read points from the 3D Viewer (${e.message}).`);
+    }
   }
 
   function escapeHtml(str){
@@ -3149,6 +3227,9 @@
     if(masterAutoLoadAttempted) return;
     if(!tcProject || !tcAccessToken) return;
     masterAutoLoadAttempted = true;
+
+    await ensureHostDetected();
+    if(isViewerCompanion) return; // companion mode reads points directly from the loaded 3D model instead (loadPointsFromViewerModel) — no need to also fetch the CSV through our own Worker here
 
     const ref = getSavedMasterRef();
     if(!ref || !ref.fileId){
