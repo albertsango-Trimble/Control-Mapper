@@ -2483,9 +2483,19 @@
     lines.push(`#${relAgg3}=IFCRELAGGREGATES('${randomIfcGuid()}',${ref(ownerHistId)},$,$,${ref(buildingId)},(${ref(storeyId)}));`);
 
     const proxyIds = [];
-    const shapeRepIds = []; // for IfcPresentationLayerAssignment — layers reference representation items, not the elements themselves
+    const shapeRepIds = []; // for the overall "Control Points" layer — layers reference representation items, not the elements themselves
+    const shapeRepsByName = []; // {name, shapeRepId} — for the additional per-point layers
     points.forEach(p=>{
       const z = p.z != null ? p.z : 0;
+      // Avoid STEP's doubled-quote escape convention entirely — testing
+      // with a real IFC engine (ifcopenshell) showed it can silently
+      // corrupt geometry placement resolution for names containing an
+      // apostrophe, even though the raw file is valid STEP syntax. A
+      // Unicode substitute (’) turned out to have the same problem for a
+      // different reason — STEP files are plain ASCII and need a special
+      // \X2\..\X0\ escape for anything outside that, which we're not
+      // generating — so stick to a safe plain-ASCII substitute instead.
+      const name = String(p.id||'').replace(/'/g,'-').replace(/[\r\n]/g,' ').replace(/[^\x20-\x7E]/g,'?');
 
       const sphereOriginId = next();
       lines.push(`#${sphereOriginId}=IFCCARTESIANPOINT((0.,0.,0.));`);
@@ -2516,6 +2526,7 @@
       const shapeRepId = next();
       lines.push(`#${shapeRepId}=IFCSHAPEREPRESENTATION(${ref(contextId)},'Body','CSG',(${ref(csgSolidId)}));`);
       shapeRepIds.push(shapeRepId);
+      shapeRepsByName.push({ name, shapeRepId });
       const prodShapeId = next();
       lines.push(`#${prodShapeId}=IFCPRODUCTDEFINITIONSHAPE($,$,(${ref(shapeRepId)}));`);
 
@@ -2531,15 +2542,6 @@
       lines.push(`#${localPlacementId}=IFCLOCALPLACEMENT(${ref(storeyPlacementId)},${ref(ptAxisId)});`);
 
       const proxyId = next();
-      // Avoid STEP's doubled-quote escape convention entirely — testing
-      // with a real IFC engine (ifcopenshell) showed it can silently
-      // corrupt geometry placement resolution for names containing an
-      // apostrophe, even though the raw file is valid STEP syntax. A
-      // Unicode substitute (’) turned out to have the same problem for a
-      // different reason — STEP files are plain ASCII and need a special
-      // \X2\..\X0\ escape for anything outside that, which we're not
-      // generating — so stick to a safe plain-ASCII substitute instead.
-      const name = String(p.id||'').replace(/'/g,'-').replace(/[\r\n]/g,' ').replace(/[^\x20-\x7E]/g,'?');
       lines.push(`#${proxyId}=IFCBUILDINGELEMENTPROXY('${pointIfcGlobalId(p.id, tcProjectId)}',${ref(ownerHistId)},'${name}',$,$,${ref(localPlacementId)},${ref(prodShapeId)},$,$);`);
       proxyIds.push(proxyId);
 
@@ -2568,6 +2570,18 @@
       const layerId = next();
       lines.push(`#${layerId}=IFCPRESENTATIONLAYERASSIGNMENT('Control Points',$,(${shapeRepIds.map(ref).join(',')}),$);`);
     }
+
+    // One additional layer per point, so each sphere can be individually
+    // toggled/selected straight from the Layers panel too — not just the
+    // Models/object tree, which already supports this. IFC's layer model
+    // has no native parent-child relationship between layers, so these
+    // show up as their own flat entries alongside "Control Points" rather
+    // than nested under it — that's a real limitation of the format
+    // itself, not something addressable from how we write the file.
+    shapeRepsByName.forEach(({name, shapeRepId})=>{
+      const pointLayerId = next();
+      lines.push(`#${pointLayerId}=IFCPRESENTATIONLAYERASSIGNMENT('${name}',$,(${ref(shapeRepId)}),$);`);
+    });
 
     lines.push("ENDSEC;");
     lines.push("END-ISO-10303-21;");
