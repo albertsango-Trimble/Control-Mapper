@@ -2641,8 +2641,18 @@
   // Includes the current point-colour preferences too, since those affect
   // the actual generated spheres — a colour change should count as a
   // real change, not just point positions/IDs.
+  // Bump this whenever buildIfcText()'s output structure changes (new
+  // entities, layers, styling approach, etc.) — otherwise the "skip
+  // regeneration if nothing changed" cache below has no way to know the
+  // generator itself is different, and will keep serving an old cached
+  // file even though point data hasn't changed. This is exactly what
+  // happened when per-point layers were added: the fingerprint only
+  // tracked point data, so the cache kept reusing the pre-layers file.
+  const IFC_GENERATOR_VERSION = 2;
+
   function pointsFingerprint(points){
     return JSON.stringify({
+      v: IFC_GENERATOR_VERSION,
       pts: points.map(p=>[p.id, p.x, p.y, p.z, p.desc, p.source]),
       mc: MASTER_COLOR, oc: OTHER_COLOR
     });
